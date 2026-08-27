@@ -1,0 +1,43 @@
+mission:
+  name: qed-02-parser-hardening
+  goal: Fix implicit multiplication and nested paren handling in parser.py
+
+tasks:
+  - Audit normalize_implicit_multiplication_expression() for edge cases
+  - Add tests for: "2(a+b)", "(a+b)(c+d)", "3xyz", "a(b+c)d"
+  - Ensure tokenizer handles all LaTeX-like tokens (\cdot, \le, \ge, \neq)
+
+context_files:
+  - parser.py
+  - test_pipeline.py
+  - IMPLEMENTATION_PLAN.md
+
+verification:
+  commands:
+    - python3 -m pytest test_pipeline.py -v
+  probes:
+    - command: python3 check_parser.py pre_paren
+      contains: "2 * (a+b)"
+    - command: python3 check_parser.py post_paren
+      contains: "(a+b) * (c+d)"
+    - command: python3 check_parser.py chain
+      contains: "3 * x * y * z"
+  clean_room: true
+  mutation:
+    enabled: true
+    fail_below: 0.7
+    max_mutants: 20
+
+recovery:
+  max_attempts: 5
+
+review:
+  enabled: true
+  adapter: opencode
+
+budget:
+  max_sends: 15
+  max_wall_seconds: 1800
+
+adapter: opencode
+git_state_guard: true

@@ -1,0 +1,40 @@
+mission:
+  name: qed-03-type-inference
+  goal: Implement context-aware type selection in agentic_pipeline.py
+
+tasks:
+  - Improve _suggest_type() and _get_var_type() to handle mixed expressions
+  - Add division detection → Rat type
+  - Add negative literal detection → Int type
+  - Generate proper type annotations in Lean output
+
+context_files:
+  - agentic_pipeline.py
+  - test_pipeline.py
+  - IMPLEMENTATION_PLAN.md
+
+verification:
+  commands:
+    - python3 run_tests.py
+  probes:
+    - command: python3 check_type.py int
+      contains: "Int"
+    - command: python3 check_type.py rat
+      contains: "Rat"
+    - command: python3 check_type.py annotation
+      contains: ": Int"
+  clean_room: true
+
+recovery:
+  max_attempts: 5
+
+review:
+  enabled: true
+  adapter: opencode
+
+budget:
+  max_sends: 15
+  max_wall_seconds: 1800
+
+adapter: opencode
+git_state_guard: true

@@ -1,0 +1,37 @@
+mission:
+  name: qed-01-no-sorry-gate
+  goal: Harden the strict no-sorry success criterion in agentic_pipeline.py
+
+tasks:
+  - Modify execute_tactic_loop() and _execute_with_initial_code() to reject ANY output containing "sorry" or "sorryAx"
+  - Add check_for_sorry() validation that scans both source AND compiler stderr
+  - Write tests proving sorry-containing outputs return failure
+
+context_files:
+  - agentic_pipeline.py
+  - test_pipeline.py
+  - IMPLEMENTATION_PLAN.md
+
+verification:
+  commands:
+    - python3 run_tests.py
+  probes:
+    - command: python3 check_sorry.py true
+      contains: "True"
+    - command: python3 check_sorry.py false
+      contains: "False"
+  clean_room: true
+
+recovery:
+  max_attempts: 5
+
+review:
+  enabled: true
+  adapter: opencode
+
+budget:
+  max_sends: 15
+  max_wall_seconds: 1800
+
+adapter: opencode
+git_state_guard: true

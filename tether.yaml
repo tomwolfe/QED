@@ -1,6 +1,6 @@
 # Tether project configuration.
 # Precedence: CLI flags > mission file > this file > defaults.
-default_adapter: mock
+default_adapter: opencode
 audit_dir: .tether/sessions
 dry_run: false
 log_level: INFO
@@ -9,3 +9,6 @@ verification_timeout_seconds: 600
 max_attempts: 3
 verification:
   commands: []
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/mimo-v2.5-free", "{prompt}"]

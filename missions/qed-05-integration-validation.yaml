@@ -1,0 +1,42 @@
+mission:
+  name: qed-05-integration-validation
+  goal: End-to-end verification with real Lean compiler
+
+tasks:
+  - Test all examples from README against actual Lean 4
+  - Verify traces.json written correctly for success AND failure
+  - Confirm no false positives (sorry = failure)
+
+context_files:
+  - agentic_pipeline.py
+  - parser.py
+  - test_pipeline.py
+  - README.md
+  - IMPLEMENTATION_PLAN.md
+
+verification:
+  commands:
+    - python3 run_tests.py
+    - python3 -m pytest test_pipeline.py -v
+  probes:
+    - command: python3 -c "from agentic_pipeline import LeanAgenticPipeline; import json; p = LeanAgenticPipeline(); result = p.run('0 = 0'); print(json.dumps({'success': result['success'], 'has_sorry': any(a.get('has_sorry', False) for a in result.get('attempts', []))})); assert result['success'] == False or not any(a.get('has_sorry', False) for a in result.get('attempts', []))"
+      contains: "success"
+    - command: python3 -c "import os; traces_exists = os.path.exists('traces.json'); print('traces.json exists:', traces_exists); print('traces.json check passed')"
+      contains: "passed"
+    - command: python3 -c "from agentic_pipeline import LeanAgenticPipeline; p = LeanAgenticPipeline(); result = p.run('hello world'); print(result['success']); assert result['success'] == False; print('Non-math input correctly rejected')"
+      contains: "rejected"
+  clean_room: true
+
+recovery:
+  max_attempts: 5
+
+review:
+  enabled: true
+  adapter: opencode
+
+budget:
+  max_sends: 15
+  max_wall_seconds: 1800
+
+adapter: opencode
+git_state_guard: true

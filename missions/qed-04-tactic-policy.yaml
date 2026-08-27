@@ -1,0 +1,40 @@
+mission:
+  name: qed-04-tactic-policy
+  goal: Make tactic selection AST-aware instead of keyword-based
+
+tasks:
+  - Refactor get_tactic_candidates() to use parsed AST structure
+  - Implement goal-state-aware tactic selection in select_tactic()
+  - Add tactic combination support ("field_simp; ring")
+
+context_files:
+  - agentic_pipeline.py
+  - parser.py
+  - test_pipeline.py
+  - IMPLEMENTATION_PLAN.md
+
+verification:
+  commands:
+    - python3 -m pytest test_pipeline.py -v
+  probes:
+    - command: python3 check_tactic.py algebraic
+      contains: "ring"
+    - command: python3 check_tactic.py inequality
+      contains: "linarith"
+    - command: python3 check_tactic.py ring_goal
+      contains: "ring"
+  clean_room: true
+
+recovery:
+  max_attempts: 5
+
+review:
+  enabled: true
+  adapter: opencode
+
+budget:
+  max_sends: 15
+  max_wall_seconds: 1800
+
+adapter: opencode
+git_state_guard: true
