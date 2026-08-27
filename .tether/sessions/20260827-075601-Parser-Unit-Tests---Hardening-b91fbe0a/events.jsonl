@@ -1,0 +1,4 @@
+{"ts": "2026-08-27T12:56:01+00:00", "kind": "session_start", "session_id": "b91fbe0aae0d", "adapter": "command", "project_dir": "/Users/tom/Documents/apps/QED", "mission_name": "Parser Unit Tests & Hardening", "dry_run": false, "prev": ""}
+{"ts": "2026-08-27T12:56:01+00:00", "kind": "checkpoint", "created": true, "is_git_repo": true, "original_head": "c33dd604a8dc1fb04e74394484380e05946f9d7d", "ref": "refs/tether/checkpoint/b91fbe0aae0d", "dirty": false, "warning": null, "prev": "101a52ae3ebf441dc1f27a73f6e305ed55981848112749f2399febb766a8469e"}
+{"ts": "2026-08-27T12:56:01+00:00", "kind": "adapter_session", "name": "command", "prev": "d8571d751d97481fdc3a783581b2820ca419a3c188e1929e85769f6f42c8e09a"}
+{"ts": "2026-08-27T12:56:01+00:00", "kind": "session_end", "status": "failed", "prev": "672354b2ccbecec1a2943a79896b17468d6ecaf91b923b3229c8d2b7ef50c031"}

@@ -1,18 +1,11 @@
 # Tether project configuration.
 # Precedence: CLI flags > mission file > this file > defaults.
-default_adapter: command
+default_adapter: opencode
 audit_dir: .tether/sessions
 dry_run: false
 log_level: INFO
 command_timeout_seconds: 1800
 verification_timeout_seconds: 600
 max_attempts: 3
-adapters:
-  command:
-    command: ["python3", "../tether/src/tether/cli.py", "run"]
-    allowed_paths:
-      - "QED/**/*.py"
-      - "QED/**/*.md"
-      - "QED/tests/**"
 verification:
   commands: []

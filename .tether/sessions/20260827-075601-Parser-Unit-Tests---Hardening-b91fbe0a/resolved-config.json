@@ -1,0 +1,47 @@
+{
+  "default_adapter": "command",
+  "audit_dir": ".tether/sessions",
+  "backup_dir": ".tether/backups",
+  "dry_run": false,
+  "log_level": "INFO",
+  "command_timeout_seconds": 1800,
+  "verification_timeout_seconds": 600,
+  "max_attempts": 3,
+  "allow_dirty": false,
+  "auto_rollback": false,
+  "redact_prompts": false,
+  "secret_denylist": [],
+  "secret_allowlist": [],
+  "sandbox_mode": "warn",
+  "writer_lock_stale_seconds": 43200,
+  "retention_days": null,
+  "adapters": {
+    "command": {
+      "command": [
+        "python3",
+        "../tether/src/tether/cli.py",
+        "run"
+      ],
+      "allowed_paths": [
+        "QED/**/*.py",
+        "QED/**/*.md",
+        "QED/tests/**"
+      ]
+    }
+  },
+  "verification": {
+    "commands": [],
+    "timeout_seconds": null,
+    "artifacts": null,
+    "assertions": null,
+    "probes": null,
+    "mutation": null,
+    "clean_room": null,
+    "clean_room_copy": null,
+    "auto_probes": null
+  },
+  "retries": {
+    "max_transient_retries": 2,
+    "transient_backoff_seconds": 10
+  }
+}

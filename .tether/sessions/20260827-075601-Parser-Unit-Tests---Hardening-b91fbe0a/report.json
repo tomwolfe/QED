@@ -1,0 +1,35 @@
+{
+  "session_id": "b91fbe0aae0d",
+  "mission_name": "Parser Unit Tests & Hardening",
+  "adapter": "command",
+  "status": "failed",
+  "started_at": "2026-08-27T12:56:01+00:00",
+  "finished_at": "2026-08-27T12:56:01+00:00",
+  "verification_results": [],
+  "recovery_attempts": [],
+  "changed_files": [],
+  "sandbox_violations": [],
+  "usage": {
+    "elapsed_seconds": 0.29642587498528883,
+    "exit_code": 2
+  },
+  "cumulative_usage": {
+    "elapsed_seconds": 0.29642587498528883,
+    "exit_code": 2.0,
+    "wall_seconds": 0.428177,
+    "send_count": 1
+  },
+  "checkpoint_info": {
+    "created": true,
+    "is_git_repo": true,
+    "original_head": "c33dd604a8dc1fb04e74394484380e05946f9d7d",
+    "ref": "refs/tether/checkpoint/b91fbe0aae0d",
+    "dirty": false,
+    "warning": null
+  },
+  "plan": "",
+  "next_steps": [
+    "Planning step ended with status 'failed'; mission aborted before execution."
+  ],
+  "audit_dir": "/Users/tom/Documents/apps/QED/.tether/sessions/20260827-075601-Parser-Unit-Tests---Hardening-b91fbe0a"
+}
