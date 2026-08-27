@@ -3,9 +3,9 @@ mission:
   goal: Implement context-aware type selection in agentic_pipeline.py
 
 tasks:
-  - Improve _suggest_type() and _get_var_type() to handle mixed expressions
-  - Add division detection → Rat type
-  - Add negative literal detection → Int type
+  - Improve _suggest_type and _get_var_type to handle mixed expressions
+  - Add division detection to Rat type
+  - Add negative literal detection to Int type
   - Generate proper type annotations in Lean output
 
 context_files:
@@ -15,7 +15,7 @@ context_files:
 
 verification:
   commands:
-    - python3 run_tests.py
+    - python3 -m pytest test_pipeline.py -v
   probes:
     - command: python3 check_type.py int
       contains: "Int"
@@ -26,15 +26,14 @@ verification:
   clean_room: true
 
 recovery:
-  max_attempts: 5
+  max_attempts: 3
 
 review:
-  enabled: true
-  adapter: opencode
+  enabled: false
 
 budget:
-  max_sends: 15
-  max_wall_seconds: 1800
+  max_sends: 10
+  max_wall_seconds: 900
 
 adapter: opencode
 git_state_guard: true
