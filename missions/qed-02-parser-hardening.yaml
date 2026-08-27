@@ -3,9 +3,9 @@ mission:
   goal: Fix implicit multiplication and nested paren handling in parser.py
 
 tasks:
-  - Audit normalize_implicit_multiplication_expression() for edge cases
-  - Add tests for: "2(a+b)", "(a+b)(c+d)", "3xyz", "a(b+c)d"
-  - Ensure tokenizer handles all LaTeX-like tokens (\cdot, \le, \ge, \neq)
+  - Audit normalize_implicit_multiplication_expression for edge cases
+  - Add tests for implicit multiplication patterns
+  - Ensure tokenizer handles all LaTeX-like tokens
 
 context_files:
   - parser.py
@@ -32,8 +32,7 @@ recovery:
   max_attempts: 5
 
 review:
-  enabled: true
-  adapter: opencode
+  enabled: false
 
 budget:
   max_sends: 15
