@@ -115,8 +115,15 @@ class LeanAgenticPipeline:
         if '/' in expression:
             return 'Rat'
         
-        # Check for negative numbers -> Int
-        if re.search(r'-\d', expression) or re.search(r'(?<!\w)-\(', expression):
+        # Check for negative numbers or subtraction -> Int
+        # Negative literals: -1, -2, etc.
+        if re.search(r'-\d', expression):
+            return 'Int'
+        # Subtraction patterns: a - b, 0 - x, (a - b)
+        if re.search(r'(?<!\w)-\(', expression) or re.search(r'\w\s*-\s*\w', expression):
+            return 'Int'
+        # Parenthesized subtraction: (a - b)
+        if re.search(r'\([^)]*-\s*\w[^)]*\)', expression):
             return 'Int'
         
         # Default to Nat for non-negative
@@ -320,8 +327,8 @@ class LeanAgenticPipeline:
             if var_type in ('Int', 'Rat'):
                 # Annotate the expression with the appropriate type
                 if '-' in expression and var_type == 'Int':
-                    # For negative numbers, add type annotation
-                    annotated_expr = re.sub(r'(-?\d+)', r'(\1 : Int)', expression)
+                    # For negative numbers, add type annotation only to negative literals
+                    annotated_expr = re.sub(r'(-\d+)', r'(\1 : Int)', expression)
                     theorem = f"theorem qed_goal : {annotated_expr} := by\n"
                 elif '/' in expression and var_type == 'Rat':
                     # For division, add type annotation
