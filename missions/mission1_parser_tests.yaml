@@ -1,7 +1,6 @@
 mission:
   name: Parser Unit Tests & Hardening
   goal: Prove the parser works in isolation and fix edge cases
-adapter: command
 tasks:
   - Create comprehensive unit tests for parser.py covering:
     - Implicit multiplication (2ab)
