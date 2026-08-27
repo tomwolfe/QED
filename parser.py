@@ -224,7 +224,7 @@ def tokenize(expression: str) -> List[str]:
     # Token pattern: numbers, variables, operators, parentheses
     token_pattern = r'''
         \d+                  # integers
-        | [a-zA-Z_]\w*       # variables/identifiers
+        | [a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*   # variables/identifiers (dotted like Nat.succ)
         | [+\-*/^=!<>]       # operators
         | \(|\)              # parentheses
         | <=|>=|!=           # multi-char operators
@@ -344,8 +344,8 @@ def parse_primary(tokens: List[str], pos: int = 0) -> Tuple[Optional[Any], int]:
         value = int(token)
         return Num(value), pos + 1
     
-    # Variable/identifier
-    elif token.isalpha() or (token.startswith('_') and token[1:].isalpha()):
+    # Variable/identifier (including dotted like Nat.succ)
+    elif token[0].isalpha() and all(c.isalnum() or c in '_.-' for c in token):
         var_name = token
         return Var(var_name), pos + 1
     
@@ -355,7 +355,8 @@ def parse_primary(tokens: List[str], pos: int = 0) -> Tuple[Optional[Any], int]:
             # Check if next token is a number or variable
             next_token = tokens[pos + 1]
             if (next_token.isdigit() or (next_token.startswith('-') and next_token[1:].isdigit()) or
-                (next_token.isalpha() or (next_token.startswith('_') and next_token[1:].isalpha()))):
+                (next_token.isalpha() or (next_token.startswith('_') and next_token[1:].isalpha())) or
+                next_token == '('):
                 # Parse the operand and negate it
                 expr, pos = parse_primary(tokens, pos + 1)
                 if expr is not None:
