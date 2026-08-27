@@ -146,20 +146,38 @@ def normalize_implicit_multiplication_expression(expr: str) -> str:
     - '2a' -> '2 * a' (number followed by variable)
     - 'ab' -> 'a * b' (two single-letter variables)
     - 'a2' -> 'a * 2' (variable followed by number)
-    - '2ab' -> '2 * a * b' (number followed by two variables)
-    - 'a2b' -> 'a * 2 * b' (variable-number-variable chain)
+    - '2ab' -> '2 * a * b' (number followed by chain of variables)
+    - '3xyz' -> '3 * x * y * z' (number followed by multi-letter chain)
+    - '(a+b)2' -> '(a+b) * 2' (paren followed by number)
+    - '(a+b)(c+d)' -> '(a+b) * (c+d)' (paren followed by paren)
+    - '2(a+b)' -> '2 * (a+b)' (number followed by paren)
+    - 'a(b+c)' -> 'a * (b+c)' (variable followed by paren)
     """
     result = expr
     
     # Replace ** with ^ for power
     result = result.replace('**', '^')
     
-    # Pattern: number followed by variable (e.g., "2a", "3x")
-    # We'll apply this repeatedly to handle chains like "2ab"
+    # Handle ) followed by various tokens
+    result = re.sub(r'\)(\d)', r') * \1', result)
+    result = re.sub(r'\)([a-zA-Z])', r') * \1', result)
+    result = re.sub(r'\)\(', r') * (', result)
+    
+    # Handle letter or digit followed by (
+    result = re.sub(r'([a-zA-Z])\(', r'\1 * (', result)
+    result = re.sub(r'(\d)\(', r'\1 * (', result)
+    
+    # Handle number followed by multi-letter lowercase chain: "3xyz" -> "3 * x * y * z"
+    def _split_chain(match):
+        num = match.group(1)
+        letters = match.group(2)
+        return num + ' * ' + ' * '.join(letters)
+    result = re.sub(r'(\d+)([a-z]{2,})(?![a-zA-Z])', _split_chain, result)
+    
+    # Pattern: number followed by single variable (e.g., "2a", "3x")
     changed = True
     while changed:
         changed = False
-        # number followed by letter
         new_result = re.sub(r'(\d)([a-zA-Z])', r'\1 * \2', result)
         if new_result != result:
             changed = True
@@ -176,13 +194,9 @@ def normalize_implicit_multiplication_expression(expr: str) -> str:
     
     # Pattern: single lowercase letter followed by single lowercase letter
     # (e.g., "ab" -> "a * b", but not "Nat" -> "N * a * t")
-    # We only match when both are single lowercase letters and the first is not 
-    # followed by more letters that would make it a multi-letter name
     changed = True
     while changed:
         changed = False
-        # Match a single lowercase letter followed by another single lowercase letter
-        # but not when the first letter is part of a longer word
         new_result = re.sub(r'(?<![a-zA-Z])([a-z])([a-z])(?![a-zA-Z])', r'\1 * \2', result)
         if new_result != result:
             changed = True
@@ -226,43 +240,29 @@ def normalize_implicit_multiplication(tokens: List[str]) -> List[str]:
     i = 0
     while i < len(tokens):
         token = tokens[i]
-        
-        # If token is a number or variable, look ahead
-        if token.isdigit() or (token.startswith('-') and token[1:].isdigit()) or \
-           (token.isalpha() or (token.startswith('_') and token[1:].isalpha())):
-            
-            # Check if next token should be multiplied implicitly
-            if i + 1 < len(tokens):
-                next_token = tokens[i + 1]
-                
-                # Implicit multiplication cases:
-                # - Number followed by variable: "2a" -> "2 * a"
-                # - Variable followed by number: "a2" (unusual but handle)
-                # - Variable followed by variable: "ab" -> "a * b"
-                # - Number followed by number: "22" (keep as is)
-                
-                should_multiply = False
-                
-                if token.isdigit():
-                    # Number followed by variable or parenthesis
-                    if next_token.isalpha() or next_token == '(':
-                        should_multiply = True
-                elif token.replace('-', '', 1).isdigit() and token.startswith('-'):
-                    # Negative number followed by variable
-                    if next_token.isalpha() or next_token == '(':
-                        should_multiply = True
-                elif token.isalpha() or (token.startswith('_') and token[1:].isalpha()):
-                    # Variable followed by variable or number
-                    if next_token.isalpha() or next_token.isdigit() or next_token == '(':
-                        should_multiply = True
-                
-                if should_multiply:
-                    normalized.append(token)
-                    normalized.append('*')
-                    i += 1
-                    continue
-        
         normalized.append(token)
+        
+        # Check if next token should be multiplied implicitly
+        if i + 1 < len(tokens):
+            next_token = tokens[i + 1]
+            should_multiply = False
+            
+            if token == ')':
+                if next_token.isdigit() or next_token.isalpha() or next_token == '(':
+                    should_multiply = True
+            elif token.isdigit():
+                if next_token.isalpha() or next_token == '(':
+                    should_multiply = True
+            elif token.startswith('-') and token[1:].isdigit():
+                if next_token.isalpha() or next_token == '(':
+                    should_multiply = True
+            elif token.isalpha() or (token.startswith('_') and token[1:].isalpha()):
+                if next_token.isalpha() or next_token.isdigit() or next_token == '(':
+                    should_multiply = True
+            
+            if should_multiply:
+                normalized.append('*')
+        
         i += 1
     
     return normalized
@@ -332,23 +332,12 @@ def parse_primary(tokens: List[str], pos: int = 0) -> Tuple[Optional[Any], int]:
     
     # Parenthesized expression
     if token == '(':
-        # Find matching closing parenthesis
-        depth = 1
-        pos += 1
-        start_pos = pos
-        while pos < len(tokens) and depth > 0:
-            if tokens[pos] == '(':
-                depth += 1
-            elif tokens[pos] == ')':
-                depth -= 1
-            pos += 1
-        
-        if depth == 0:
-            # Parse the expression inside parentheses
-            inner_expr, inner_pos = parse_expression(tokens, start_pos)
-            if inner_pos < len(tokens) and tokens[inner_pos] == ')':
-                pos = inner_pos + 1
-                return inner_expr, pos
+        pos += 1  # skip '('
+        inner_expr, pos = parse_expression(tokens, pos)
+        if pos < len(tokens) and tokens[pos] == ')':
+            pos += 1  # skip ')'
+            return inner_expr, pos
+        return None, pos
     
     # Number
     elif token.isdigit() or (token.startswith('-') and token[1:].isdigit()):

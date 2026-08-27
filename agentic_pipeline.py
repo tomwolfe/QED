@@ -87,30 +87,46 @@ theorem {theorem_name} : {latex} := by
         
         return False, ""
 
-    def get_tactic_candidates(self, latex: str) -> List[str]:
+    def get_tactic_candidates(self, latex: str, parsed_info: Dict = None) -> List[str]:
         """Get ordered list of tactic candidates based on the input statement.
         
         Phase 1: Real tactic search loop - selects tactics based on statement type.
+        Uses parsed AST info when available for smarter ordering.
         """
         # Default tactic candidates for MVP
         candidates = ["rfl", "simp", "norm_num", "decide", "ring", "linarith", "omega", "field_simp"]
         
-        # Simple heuristics to prioritize tactics based on input
-        if any(op in latex for op in ["+", "-", "*", "^"]):
-            # Polynomial/algebraic expressions
-            candidates = ["ring", "simp", "linarith", "norm_num", "rfl", "decide"]
+        # Check for division - needs field_simp first
+        if any(op in latex for op in ["/", "\\frac"]):
+            candidates = ["field_simp", "ring", "norm_num", "simp", "linarith", "rfl"]
         
-        if any(op in latex for op in ["<", ">", "≤", "≥", "\\le", "\\ge"]):
-            # Inequalities
+        # Check for inequalities - needs linarith/omega first
+        elif any(op in latex for op in ["<", ">", "≤", "≥", "\\le", "\\ge"]):
             candidates = ["linarith", "omega", "simp", "norm_num", "rfl"]
         
+        # Polynomial/algebraic expressions - ring first
+        elif any(op in latex for op in ["+", "-", "*", "^"]):
+            candidates = ["ring", "simp", "linarith", "norm_num", "field_simp", "rfl", "decide"]
+        
+        # Natural number specific patterns
         if "Nat.succ" in latex or "Nat.zero" in latex:
-            # Natural number specific
             candidates = ["rfl", "simp", "omega", "norm_num", "decide"]
         
+        # Negative numbers - need Int type
         if any(neg in latex for neg in ["-1", "-2", "-3", "(-"]):
-            # Negative numbers - need Int type
             candidates = ["norm_num", "ring", "simp", "linarith", "rfl"]
+        
+        # Use parsed info for smarter ordering when available
+        if parsed_info is not None:
+            free_vars = parsed_info.get('free_variables', [])
+            if free_vars:
+                # Has variables - simp and ring are more likely to help
+                if "ring" in candidates:
+                    candidates.remove("ring")
+                    candidates.insert(0, "ring")
+                if "simp" in candidates:
+                    candidates.remove("simp")
+                    candidates.insert(1, "simp")
         
         return candidates
 
@@ -279,8 +295,8 @@ theorem {theorem_name} : {latex} := by
             # Division needs Rat or Real
             return "Rat"
         
-        # Default to Int for algebraic identities
-        return "Int"
+        # Default to Nat for non-negative integer expressions
+        return "Nat"
     
     def _get_var_type(self, free_variables: List[str], latex: str) -> str:
         """Get the type for variables in the theorem."""
@@ -292,8 +308,11 @@ theorem {theorem_name} : {latex} := by
         if "Nat.succ" in latex or "Nat.zero" in latex:
             return "Nat"
         
-        # Default to Int for MVP
-        return "Int"
+        if any(op in latex for op in ["/", "\\frac"]):
+            return "Rat"
+        
+        # Default to Nat for non-negative integer expressions
+        return "Nat"
     
     def _select_default_tactic(self, latex: str) -> str:
         """Select a default tactic based on the input statement type."""
@@ -364,7 +383,7 @@ theorem {theorem_name} : {latex} := by
         return error_info if error_info["type"] != "unknown" else None
 
     def select_tactic(self, error_info: Dict) -> Optional[str]:
-        """Select appropriate tactic based on error information."""
+        """Select appropriate tactic based on error information and goal state."""
         if not error_info:
             return None
         
@@ -373,31 +392,44 @@ theorem {theorem_name} : {latex} := by
         term = error_info.get("term", "").lower()
         expected = error_info.get("expected_type", "").lower()
         
-        if "ring" in error_msg or any(op in error_msg for op in ["+", "-", "*", "^"]):
-            return "ring"
+        # Ring-solvable patterns in goal
+        if any(op in goal for op in ["+", "-", "*", "^", "≤", "≥", "<", ">"]):
+            if "ring" in error_msg or any(op in term for op in ["+", "-", "*", "^"]):
+                return "ring"
         
+        # Linear arithmetic patterns
         if (
             "inequality" in error_msg
             or "or" in error_msg
             or any(op in goal for op in ["<", "≤", "≥"])
+            or any(kw in goal for kw in ["nat", "int", "linear"])
         ):
             return "linarith"
         
+        # Natural number arithmetic - omega handles linear nat/int
+        if any(kw in goal for kw in ["nat", "n"]):
+            if any(op in goal for op in ["+", "-", "<", "≤"]):
+                return "omega"
+        
+        # Induction patterns
         if "induction" in error_msg or (
             "case" in error_msg and "case" in error_info.get("line", "")
         ):
             return "induction"
         
-        if "apply" in error_info.get("error", "").lower() and "has type" in error_info.get("error", "").lower():
+        # Application patterns
+        if "apply" in error_msg and "has type" in error_msg:
             if "forall" in expected or "exists" in expected:
                 return "intro"
             return "apply"
         
-        if "sorry" in error_msg.lower():
+        # Sorry placeholders
+        if "sorry" in error_msg:
             return "exact"
         
+        # Equality with arithmetic
         if "eq" in goal or "equal" in goal:
-            if "add" in term or "mul" in term:
+            if any(op in term for op in ["+", "-", "*", "add", "mul"]):
                 return "field_simp"
             return "simp"
         

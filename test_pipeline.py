@@ -53,3 +53,210 @@ def test_identity_theorem():
 if __name__ == "__main__":
     success = test_identity_theorem()
     sys.exit(0 if success else 1)
+
+
+# --- Parser: String normalization tests ---
+
+from parser import (
+    normalize_implicit_multiplication_expression,
+    normalize_implicit_multiplication,
+    tokenize,
+    parse_primary,
+    parse_expression,
+    parse_equation,
+    BinOp,
+    Var,
+    Num,
+)
+
+
+def test_normalize_string_number_var():
+    assert normalize_implicit_multiplication_expression('2a') == '2 * a'
+    assert normalize_implicit_multiplication_expression('3x') == '3 * x'
+
+
+def test_normalize_string_number_chain():
+    assert normalize_implicit_multiplication_expression('2ab') == '2 * a * b'
+    assert normalize_implicit_multiplication_expression('3xyz') == '3 * x * y * z'
+
+
+def test_normalize_string_post_paren():
+    assert normalize_implicit_multiplication_expression('(a+b)2') == '(a+b) * 2'
+    assert normalize_implicit_multiplication_expression('(a+b)(c+d)') == '(a+b) * (c+d)'
+    assert normalize_implicit_multiplication_expression('(a+b)x') == '(a+b) * x'
+
+
+def test_normalize_string_pre_paren():
+    assert normalize_implicit_multiplication_expression('2(a+b)') == '2 * (a+b)'
+    assert normalize_implicit_multiplication_expression('a(b+c)') == 'a * (b+c)'
+
+
+def test_normalize_string_single_pairs():
+    assert normalize_implicit_multiplication_expression('ab') == 'a * b'
+    assert normalize_implicit_multiplication_expression('ab + cd') == 'a * b + c * d'
+
+
+def test_normalize_string_equation():
+    result = normalize_implicit_multiplication_expression('(a+b)^2 = a^2 + 2ab + b^2')
+    assert result == '(a+b)^2 = a^2 + 2 * a * b + b^2'
+
+
+def test_normalize_string_multi_letter_unchanged():
+    assert normalize_implicit_multiplication_expression('Nat + x') == 'Nat + x'
+
+
+# --- Parser: Token normalization tests ---
+
+def test_normalize_tokens_paren_to_digit():
+    tokens = ['(', 'a', '+', 'b', ')', '2']
+    result = normalize_implicit_multiplication(tokens)
+    idx = result.index(')')
+    assert result[idx + 1] == '*'
+    assert result[idx + 2] == '2'
+
+
+def test_normalize_tokens_paren_to_var():
+    tokens = ['(', 'a', '+', 'b', ')', 'x']
+    result = normalize_implicit_multiplication(tokens)
+    idx = result.index(')')
+    assert result[idx + 1] == '*'
+    assert result[idx + 2] == 'x'
+
+
+def test_normalize_tokens_paren_to_paren():
+    tokens = ['(', 'a', '+', 'b', ')', '(', 'c', '+', 'd', ')']
+    result = normalize_implicit_multiplication(tokens)
+    idx = result.index(')')
+    assert result[idx + 1] == '*'
+    assert result[idx + 2] == '('
+
+
+def test_normalize_tokens_num_to_paren():
+    tokens = ['2', '(', 'a', '+', 'b', ')']
+    result = normalize_implicit_multiplication(tokens)
+    assert result[1] == '*'
+
+
+def test_normalize_tokens_var_to_paren():
+    tokens = ['a', '(', 'b', '+', 'c', ')']
+    result = normalize_implicit_multiplication(tokens)
+    assert result[1] == '*'
+
+
+# --- Parser: Integration tests ---
+
+def test_parse_paren_mul():
+    tokens = tokenize('(a+b)2')
+    tokens = normalize_implicit_multiplication(tokens)
+    expr, pos = parse_expression(tokens)
+    assert expr is not None
+    assert isinstance(expr, BinOp)
+    assert expr.op == '*'
+
+
+def test_parse_nested_parens():
+    tokens = tokenize('((a+b))')
+    tokens = normalize_implicit_multiplication(tokens)
+    expr, pos = parse_expression(tokens)
+    assert expr is not None
+    assert isinstance(expr, BinOp)
+    assert expr.op == '+'
+
+
+def test_parse_number_var_chain():
+    tokens = tokenize('3xyz')
+    tokens = normalize_implicit_multiplication(tokens)
+    expr, pos = parse_expression(tokens)
+    assert expr is not None
+    assert isinstance(expr, BinOp)
+
+
+def test_parse_equation_2ab():
+    eq, free_vars = parse_equation('(a+b)^2 = a^2 + 2ab + b^2')
+    assert eq is not None
+    assert 'a' in free_vars
+    assert 'b' in free_vars
+
+
+# --- Type inference tests ---
+
+def test_suggest_type_nat():
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline()
+    assert pipeline._suggest_type('x + 0 = x') == 'Nat'
+
+
+def test_suggest_type_int():
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline()
+    assert pipeline._suggest_type('-1 + 1 = 0') == 'Int'
+
+
+def test_suggest_type_rat():
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline()
+    assert pipeline._suggest_type('x / 2 = y') == 'Rat'
+
+
+def test_get_var_type_nat():
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline()
+    assert pipeline._get_var_type(['x'], 'x + 0 = x') == 'Nat'
+
+
+def test_get_var_type_int():
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline()
+    assert pipeline._get_var_type(['x'], '-1 + x = 0') == 'Int'
+
+
+# --- Tactic selection tests ---
+
+def test_tactic_candidates_algebraic():
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline()
+    candidates = pipeline.get_tactic_candidates('(a+b)^2 = a^2 + 2ab + b^2')
+    assert 'ring' in candidates
+    assert candidates.index('ring') < candidates.index('simp')
+
+
+def test_tactic_candidates_inequality():
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline()
+    candidates = pipeline.get_tactic_candidates('x < x + 1')
+    assert 'linarith' in candidates
+    assert candidates.index('linarith') < candidates.index('simp')
+
+
+def test_tactic_candidates_division():
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline()
+    candidates = pipeline.get_tactic_candidates('x / 2 = y')
+    assert 'field_simp' in candidates
+    assert candidates.index('field_simp') < candidates.index('ring')
+
+
+def test_select_tactic_ring_goal():
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline()
+    error_info = {
+        "error": "type mismatch",
+        "goal": "⊢ a + b = b + a",
+        "term": "a + b",
+        "expected_type": "Nat",
+    }
+    tactic = pipeline.select_tactic(error_info)
+    assert tactic == 'ring'
+
+
+def test_select_tactic_linarith_inequality():
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline()
+    error_info = {
+        "error": "type mismatch",
+        "goal": "⊢ a < b",
+        "term": "a",
+        "expected_type": "Bool",
+    }
+    tactic = pipeline.select_tactic(error_info)
+    assert tactic == 'linarith'

@@ -1,3 +1,12 @@
 __pycache__/
 *.pyc
+*.pyo
 traces.json
+.tether/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+output.lean
+*.egg-info/
+.venv/
+venv/
