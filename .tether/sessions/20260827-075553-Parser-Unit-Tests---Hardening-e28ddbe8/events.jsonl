@@ -1,0 +1,4 @@
+{"ts": "2026-08-27T12:55:53+00:00", "kind": "session_start", "session_id": "e28ddbe8571d", "adapter": "command", "project_dir": "/Users/tom/Documents/apps/QED", "mission_name": "Parser Unit Tests & Hardening", "dry_run": false, "prev": ""}
+{"ts": "2026-08-27T12:55:53+00:00", "kind": "checkpoint", "created": false, "is_git_repo": true, "original_head": "b7087428ccf257ae451ca37034d80400721bd1fd", "ref": null, "dirty": true, "warning": "Working tree is dirty. Refusing to proceed without --allow-dirty. Uncommitted changes cannot be restored by rollback.", "prev": "bcd0dbaf12394c964d94c77e466b8f1883fde0f736bdeb573133d95d3665c696"}
+{"ts": "2026-08-27T12:55:53+00:00", "kind": "aborted_dirty", "session_id": "e28ddbe8571d", "prev": "c1ee3f4a0dd27b4580fa14c74c93da9cab1f4f7420b64534010a08c2187bfc80"}
+{"ts": "2026-08-27T12:55:53+00:00", "kind": "session_end", "status": "failed", "prev": "0d549873c03127bbe8bb0e29d86dc65aa50e0dfa60b78c8a3ef35818e08fa256"}

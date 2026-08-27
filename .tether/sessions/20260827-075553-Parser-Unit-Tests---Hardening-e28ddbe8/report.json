@@ -1,0 +1,24 @@
+{
+  "session_id": "e28ddbe8571d",
+  "mission_name": "Parser Unit Tests & Hardening",
+  "adapter": "command",
+  "status": "failed",
+  "started_at": "2026-08-27T12:55:53+00:00",
+  "finished_at": "2026-08-27T12:55:53+00:00",
+  "verification_results": [],
+  "recovery_attempts": [],
+  "changed_files": [],
+  "checkpoint_info": {
+    "created": false,
+    "is_git_repo": true,
+    "original_head": "b7087428ccf257ae451ca37034d80400721bd1fd",
+    "ref": null,
+    "dirty": true,
+    "warning": "Working tree is dirty. Refusing to proceed without --allow-dirty. Uncommitted changes cannot be restored by rollback."
+  },
+  "plan": "",
+  "next_steps": [
+    "Working tree is dirty; refusing to start the agent. Commit or stash your changes in /Users/tom/Documents/apps/QED, or re-run with --allow-dirty."
+  ],
+  "audit_dir": "/Users/tom/Documents/apps/QED/.tether/sessions/20260827-075553-Parser-Unit-Tests---Hardening-e28ddbe8"
+}

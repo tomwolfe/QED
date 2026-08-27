@@ -1,0 +1,20 @@
+mission:
+  name: Parser Unit Tests & Hardening
+  goal: Prove the parser works in isolation and fix edge cases
+adapter: command
+tasks:
+  - Create comprehensive unit tests for parser.py covering:
+    - Implicit multiplication (2ab)
+    - Relations (=, <, \le)
+    - Nested parentheses
+    - Negative numbers
+    - Free variable extraction
+  - Ensure parse() returns correct ASTs and free variables
+  - Fix any bugs found during testing
+verification:
+  commands:
+    - "pytest tests/test_parser_unit.py -v"
+  artifacts:
+    - "tests/test_parser_unit.py"
+    - "parser.py"
+  timeout_seconds: 600

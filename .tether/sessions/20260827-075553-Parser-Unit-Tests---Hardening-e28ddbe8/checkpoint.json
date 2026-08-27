@@ -1,0 +1,8 @@
+{
+  "created": false,
+  "is_git_repo": true,
+  "original_head": "b7087428ccf257ae451ca37034d80400721bd1fd",
+  "ref": null,
+  "dirty": true,
+  "warning": "Working tree is dirty. Refusing to proceed without --allow-dirty. Uncommitted changes cannot be restored by rollback."
+}
