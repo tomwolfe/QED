@@ -413,3 +413,94 @@ def test_verify_no_sorry_axioms_fail_closed():
     is_clean, reason = pipeline._verify_no_sorry_axioms("/nonexistent/path.lean")
     assert is_clean is False
     assert "fail-closed" in reason.lower() or "error" in reason.lower()
+
+
+# --- AST helper tests ---
+
+from parser import (
+    contains_op,
+    is_inequality,
+    has_numeric_ops,
+    has_polynomial_structure,
+    parse_equation,
+    BinOp,
+    Var,
+    Num,
+    Neg,
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+)
+
+
+def test_contains_op_division():
+    eq, _ = parse_equation("x / 2 = y")
+    assert contains_op(eq, '/') is True
+    assert contains_op(eq, '^') is False
+
+
+def test_contains_op_power():
+    eq, _ = parse_equation("a^2 = b")
+    assert contains_op(eq, '^') is True
+    assert contains_op(eq, '/') is False
+
+
+def test_contains_op_none():
+    assert contains_op(None, '+') is False
+
+
+def test_is_inequality_true():
+    for expr in ["x < y", "x > y", "x <= y", "x >= y", "x != y"]:
+        eq, _ = parse_equation(expr)
+        assert is_inequality(eq) is True, f"Expected inequality for {expr}"
+
+
+def test_is_inequality_false():
+    eq, _ = parse_equation("x = y")
+    assert is_inequality(eq) is False
+
+
+def test_has_numeric_ops_addition():
+    eq, _ = parse_equation("x + y = z")
+    assert has_numeric_ops(eq) is True
+
+
+def test_has_numeric_ops_multiplication():
+    eq, _ = parse_equation("x * y = z")
+    assert has_numeric_ops(eq) is True
+
+
+def test_has_numeric_ops_no_ops():
+    eq, _ = parse_equation("x = y")
+    assert has_numeric_ops(eq) is False
+
+
+def test_has_polynomial_structure_power():
+    eq, _ = parse_equation("(a + b)^2 = a^2 + b^2")
+    assert has_polynomial_structure(eq) is True
+
+
+def test_has_polynomial_structure_implicit_mul():
+    """2ab = a * b has * but no ^, so it should NOT be polynomial."""
+    eq, _ = parse_equation("2ab = a * b")
+    assert has_polynomial_structure(eq) is False
+
+
+def test_has_polynomial_structure_no_poly():
+    eq, _ = parse_equation("x + y = z")
+    assert has_polynomial_structure(eq) is False
+
+
+def test_tactic_candidates_ab_not_false_positive():
+    """Verify that 'ab = a * b' doesn't falsely trigger polynomial branch
+    when there is no ^ operator in the AST."""
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline()
+    # After normalization: "a * b = a * b" — has * but no ^
+    # The polynomial branch should NOT fire (only * without ^ is not polynomial)
+    candidates = pipeline.get_tactic_candidates("ab = a * b")
+    # Should use default order (no ring priority), since there's no ^ operator
+    assert candidates[0] == 'rfl'

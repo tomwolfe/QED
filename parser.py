@@ -423,8 +423,17 @@ def parse_equation(expression: str) -> Tuple[Optional[Any], Optional[List[str]]]
     right_vars = extract_free_variables(right)
     free_vars = sorted(list(set(left_vars + right_vars)))
     
-    # Create equation node
-    eq = Eq(left, right)
+    # Create relation node based on operator
+    rel_nodes = {
+        '=': Eq,
+        '!=': Ne,
+        '<': Lt,
+        '<=': Le,
+        '>': Gt,
+        '>=': Ge,
+    }
+    node_cls = rel_nodes.get(rel_op, Eq)
+    eq = node_cls(left, right)
     
     return eq, free_vars
 
@@ -469,6 +478,56 @@ def extract_free_variables(node) -> List[str]:
     return sorted(list(vars_set))
 
 
+def contains_op(node, op: str) -> bool:
+    """Recursively check if any BinOp in the AST uses the given operator."""
+    if node is None:
+        return False
+    if isinstance(node, BinOp):
+        if node.op == op:
+            return True
+        return contains_op(node.left, op) or contains_op(node.right, op)
+    if isinstance(node, Neg):
+        return contains_op(node.expr, op)
+    if isinstance(node, (Eq, Ne, Lt, Le, Gt, Ge)):
+        return contains_op(node.left, op) or contains_op(node.right, op)
+    return False
+
+
+def is_inequality(node) -> bool:
+    """Return True if the node is a comparison (Ne, Lt, Le, Gt, Ge)."""
+    return isinstance(node, (Ne, Lt, Le, Gt, Ge))
+
+
+def has_numeric_ops(node) -> bool:
+    """Check for + or * operators in the AST tree."""
+    if node is None:
+        return False
+    if isinstance(node, BinOp):
+        if node.op in ('+', '*'):
+            return True
+        return has_numeric_ops(node.left) or has_numeric_ops(node.right)
+    if isinstance(node, Neg):
+        return has_numeric_ops(node.expr)
+    if isinstance(node, (Eq, Ne, Lt, Le, Gt, Ge)):
+        return has_numeric_ops(node.left) or has_numeric_ops(node.right)
+    return False
+
+
+def has_polynomial_structure(node) -> bool:
+    """Check for ^ operators (detects polynomial/algebraic expressions)."""
+    if node is None:
+        return False
+    if isinstance(node, BinOp):
+        if node.op == '^':
+            return True
+        return has_polynomial_structure(node.left) or has_polynomial_structure(node.right)
+    if isinstance(node, Neg):
+        return has_polynomial_structure(node.expr)
+    if isinstance(node, (Eq, Ne, Lt, Le, Gt, Ge)):
+        return has_polynomial_structure(node.left) or has_polynomial_structure(node.right)
+    return False
+
+
 def parse(input_string: str) -> Dict[str, Any]:
     """Parse a mathematical statement and return structured information.
     
@@ -492,10 +551,15 @@ def parse(input_string: str) -> Dict[str, Any]:
     }
     
     if eq is not None:
-        result['type'] = 'equation'
         result['left'] = eq.left
         result['right'] = eq.right
-        result['relation'] = 'Eq'
+        if isinstance(eq, Eq):
+            result['type'] = 'equation'
+            result['relation'] = '='
+        else:
+            result['type'] = 'inequality'
+            rel_map = {Ne: '!=', Lt: '<', Le: '<=', Gt: '>', Ge: '>='}
+            result['relation'] = rel_map.get(type(eq), '=')
     else:
         # Check for inequality types
         normalized = input_string.strip()

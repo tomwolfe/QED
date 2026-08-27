@@ -14,9 +14,14 @@ from pathlib import Path
 from typing import List, Optional, Tuple, Dict, Any
 from parser import (
     parse_equation,
+    parse_expression,
     extract_free_variables,
     tokenize,
     normalize_implicit_multiplication,
+    contains_op,
+    is_inequality,
+    has_numeric_ops,
+    has_polynomial_structure,
     BinOp,
     Var,
     Num,
@@ -248,19 +253,24 @@ class LeanAgenticPipeline:
         """
         candidates = []
         
-        # Check for division -> field_simp first
-        if '/' in expression:
+        # Parse expression to get AST for classification
+        eq, _ = parse_equation(expression)
+        
+        if eq is not None:
+            ast_node = eq
+        else:
+            # For non-equation expressions, parse the full expression
+            tokens = tokenize(expression)
+            tokens = normalize_implicit_multiplication(tokens)
+            ast_node, _ = parse_expression(tokens)
+        
+        # Classify using AST helpers
+        if contains_op(ast_node, '/'):
             candidates.extend(['field_simp', 'ring', 'norm_num', 'simp'])
-        
-        # Check for inequality -> linarith/omega first
-        elif re.search(r'[<>]|<=|>=|!=', expression):
+        elif is_inequality(ast_node):
             candidates.extend(['linarith', 'omega', 'simp', 'norm_num'])
-        
-        # Check for polynomial/algebraic -> ring first
-        elif re.search(r'\^|[*]|ab|a\^2|b\^2', expression):
+        elif has_polynomial_structure(ast_node):
             candidates.extend(['ring', 'simp', 'linarith', 'norm_num'])
-        
-        # Default order
         else:
             candidates.extend(['rfl', 'simp', 'norm_num', 'decide', 'ring'])
         
@@ -285,21 +295,37 @@ class LeanAgenticPipeline:
         error = error_info.get('error', '')
         expected_type = error_info.get('expected_type', '')
         
-        # Check goal for ring patterns
-        if re.search(r'[+*^].*=', goal) or 'ring' in goal.lower():
+        # Strip the turnstile prefix from Lean goals for parsing
+        goal_text = goal.lstrip('⊢ ').strip()
+        
+        # Parse the goal to get an AST for classification
+        goal_eq, _ = parse_equation(goal_text)
+        if goal_eq is not None:
+            goal_ast = goal_eq
+        else:
+            tokens = tokenize(goal_text)
+            tokens = normalize_implicit_multiplication(tokens)
+            goal_ast, _ = parse_expression(tokens)
+        
+        # Check goal for ring patterns (polynomial structure or algebraic ops)
+        if has_polynomial_structure(goal_ast) or 'ring' in goal.lower():
             return 'ring'
         
         # Check for inequality patterns
-        if re.search(r'[<>]|<=|>=', goal):
+        if is_inequality(goal_ast):
             return 'linarith'
         
         # Check for type mismatch with Bool
         if 'Bool' in expected_type:
             return 'decide'
         
-        # Check for numeric normalization
-        if re.search(r'\d+', goal) and ('+' in goal or '*' in goal):
+        # Check for numeric normalization (+, *, or digits)
+        if has_numeric_ops(goal_ast) and re.search(r'\d+', goal):
             return 'norm_num'
+        
+        # Check for algebraic structure (+ or * without ^) — ring or norm_num
+        if has_numeric_ops(goal_ast):
+            return 'ring'
         
         # Default to simp
         return 'simp'
