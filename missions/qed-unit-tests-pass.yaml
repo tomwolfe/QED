@@ -1,0 +1,41 @@
+mission:
+  name: qed-unit-tests-pass
+  goal: Verify all 37 unit tests pass and pipeline handles missing Lean gracefully
+
+tasks:
+  - Run all unit tests with pytest
+  - Verify pipeline returns proper error when Lean is missing
+  - Confirm no sorry in any test output
+
+context_files:
+  - agentic_pipeline.py
+  - test_pipeline.py
+
+verification:
+  commands:
+    - python3 -m pytest test_pipeline.py -v
+    - python3 check_sorry.py true
+    - python3 check_sorry.py false
+    - python3 check_parser.py pre_paren
+    - python3 check_parser.py post_paren
+    - python3 check_parser.py chain
+    - python3 check_type.py int
+    - python3 check_type.py rat
+    - python3 check_type.py annotation
+    - python3 check_tactic.py algebraic
+    - python3 check_tactic.py inequality
+    - python3 check_tactic.py ring_goal
+  clean_room: true
+
+recovery:
+  max_attempts: 3
+
+review:
+  enabled: false
+
+budget:
+  max_sends: 5
+  max_wall_seconds: 600
+
+adapter: opencode
+git_state_guard: true
