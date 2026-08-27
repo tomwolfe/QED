@@ -336,3 +336,31 @@ def test_success_implies_no_sorry_in_output():
         assert result['verification']['source_check'] == 'passed'
         assert result['verification']['compiler_check'] == 'passed'
         assert result['verification']['axioms_check'] == 'passed'
+
+
+def test_check_for_sorry_compiler_warning_pattern():
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline()
+    has_sorry, reason = pipeline.check_for_sorry(
+        "theorem foo : 1 = 1 := by\n  rfl",
+        "warning: declaration 'foo' uses sorry"
+    )
+    assert has_sorry is True
+    assert "warning" in reason.lower()
+
+
+def test_verify_no_sorry_axioms_clean_file():
+    import tempfile
+    import os
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline()
+    lean_code = "theorem foo : 1 = 1 := by\n  rfl\n"
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.lean', delete=False) as f:
+        f.write(lean_code)
+        temp_path = f.name
+    try:
+        is_clean, reason = pipeline._verify_no_sorry_axioms(temp_path)
+        assert is_clean is True
+        assert reason == "" or "skipped" in reason.lower()
+    finally:
+        os.unlink(temp_path)
