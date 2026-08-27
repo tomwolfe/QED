@@ -360,7 +360,56 @@ def test_verify_no_sorry_axioms_clean_file():
         temp_path = f.name
     try:
         is_clean, reason = pipeline._verify_no_sorry_axioms(temp_path)
-        assert is_clean is True
-        assert reason == "" or "skipped" in reason.lower()
+        # Either clean (if lean works) or fail-closed with error reason (if lean unavailable)
+        assert is_clean is True or "fail-closed" in reason.lower() or "error" in reason.lower()
     finally:
         os.unlink(temp_path)
+
+
+# --- Hardened no-sorry gate tests ---
+
+def test_check_for_sorry_source_tactic_sorry():
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline()
+    has_sorry, reason = pipeline.check_for_sorry("theorem foo : 1 = 1 := by\n  exact Tactic.sorry", "")
+    assert has_sorry is True
+    assert "Tactic.sorry" in reason
+
+
+def test_check_for_sorry_source_lean_elab_sorry():
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline()
+    has_sorry, reason = pipeline.check_for_sorry("theorem foo : 1 = 1 := by\n  exact Lean.Elab.Tactic.sorry", "")
+    assert has_sorry is True
+    assert "Lean.Elab.Tactic.sorry" in reason
+
+
+def test_check_for_sorry_compiler_uses_sorryax():
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline()
+    has_sorry, reason = pipeline.check_for_sorry(
+        "theorem foo : 1 = 1 := by\n  rfl",
+        "uses sorryAx"
+    )
+    assert has_sorry is True
+    assert "sorryAx" in reason
+
+
+def test_check_for_sorry_clean_no_false_positive():
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline()
+    # "sorry" as part of a longer word should not trigger
+    has_sorry, _ = pipeline.check_for_sorry(
+        "theorem foo : 1 = 1 := by\n  rfl",
+        "info: processing file 'sorryfoo.lean'"
+    )
+    assert has_sorry is False
+
+
+def test_verify_no_sorry_axioms_fail_closed():
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline()
+    # Non-existent path should fail-closed (return False)
+    is_clean, reason = pipeline._verify_no_sorry_axioms("/nonexistent/path.lean")
+    assert is_clean is False
+    assert "fail-closed" in reason.lower() or "error" in reason.lower()

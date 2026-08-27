@@ -150,10 +150,15 @@ class LeanAgenticPipeline:
             (has_sorry, reason)
         """
         # Check source for sorry or sorryAx (word boundary match)
-        if re.search(r'\bsorry\b', lean_source):
-            return True, "Lean source contains 'sorry'"
+        # Check fully-qualified patterns first to get specific reason
+        if re.search(r'\bLean\.Elab\.Tactic\.sorry\b', lean_source):
+            return True, "Lean source contains 'Lean.Elab.Tactic.sorry'"
+        if re.search(r'\bTactic\.sorry\b', lean_source):
+            return True, "Lean source contains 'Tactic.sorry'"
         if re.search(r'\bsorryAx\b', lean_source):
             return True, "Lean source contains 'sorryAx'"
+        if re.search(r'\bsorry\b', lean_source):
+            return True, "Lean source contains 'sorry'"
         
         # Check compiler output for sorry or sorryAx (word boundary match)
         if re.search(r'\bsorryAx\b', compiler_output):
@@ -164,6 +169,8 @@ class LeanAgenticPipeline:
             return True, "Compiler output indicates declaration uses sorry"
         if re.search(r'warning:.*uses sorry', compiler_output):
             return True, "Compiler output warning indicates sorry usage"
+        if re.search(r'uses sorryAx', compiler_output):
+            return True, "Compiler output indicates uses sorryAx"
         
         if re.search(r'\bsorry\b', compiler_output):
             return True, "Compiler output mentions 'sorry'"
@@ -207,11 +214,15 @@ class LeanAgenticPipeline:
                 return False, "#print axioms shows sorryAx"
             if re.search(r'declaration uses sorry', output):
                 return False, "#print axioms indicates declaration uses sorry"
+            if re.search(r'\bTactic\.sorry\b', output):
+                return False, "#print axioms shows Tactic.sorry"
+            if re.search(r'\bLean\.Elab\.Tactic\.sorry\b', output):
+                return False, "#print axioms shows Lean.Elab.Tactic.sorry"
             
             return True, ""
             
-        except Exception:
-            return True, "Axiom verification skipped (error)"
+        except Exception as e:
+            return False, f"Axiom verification failed (fail-closed): {e}"
         finally:
             try:
                 os.unlink(verify_path)
@@ -403,6 +414,18 @@ class LeanAgenticPipeline:
                 
                 # Success if compiled without sorry
                 if result.returncode == 0 and not has_sorry:
+                    # Post-compilation re-read: verify file on disk still has no sorry
+                    try:
+                        with open(temp_path, 'r') as f:
+                            disk_source = f.read()
+                        disk_sorry, disk_reason = self.check_for_sorry(disk_source, '')
+                        if disk_sorry:
+                            attempt['has_sorry'] = True
+                            attempt['sorry_reason'] = f"Post-compilation source re-read: {disk_reason}"
+                            continue
+                    except Exception:
+                        pass
+                    
                     # Additional verification: check axioms if compilation succeeded
                     axioms_clean, axioms_reason = self._verify_no_sorry_axioms(temp_path)
                     
