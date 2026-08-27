@@ -300,7 +300,7 @@ def test_check_for_sorry_compiler_word_boundary():
     from agentic_pipeline import LeanAgenticPipeline
     pipeline = LeanAgenticPipeline()
     # "sorrier" should NOT trigger the sorry check
-    has_sorry, _ = pipeline.check_for_sorry("theorem foo : 1 = 1 := by\n  rfl", "sorrier is not a sorry-like word")
+    has_sorry, _ = pipeline.check_for_sorry("theorem foo : 1 = 1 := by\n  rfl", "sorrier is not the answer")
     assert has_sorry is False
 
 
