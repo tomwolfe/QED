@@ -10,3 +10,4 @@ output.lean
 *.egg-info/
 .venv/
 venv/
+missions/
