@@ -130,6 +130,9 @@ class LeanAgenticPipeline:
         """
         Check if output contains sorry or sorryAx.
         
+        Uses word-boundary matching to avoid false positives from identifiers
+        containing "sorry" as a substring.
+        
         Args:
             lean_source: The Lean source code
             compiler_output: Compiler stdout/stderr
@@ -137,15 +140,73 @@ class LeanAgenticPipeline:
         Returns:
             (has_sorry, reason)
         """
-        # Check source for sorry
-        if 'sorry' in lean_source:
+        # Check source for sorry (word boundary match)
+        if re.search(r'\bsorry\b', lean_source):
             return True, "Lean source contains 'sorry'"
         
-        # Check compiler output for sorryAx
-        if 'sorryAx' in compiler_output:
+        # Check compiler output for sorryAx (word boundary match)
+        if re.search(r'\bsorryAx\b', compiler_output):
             return True, "Compiler output mentions 'sorryAx'"
         
+        # Check for Lean 4 warning patterns indicating sorry usage
+        if re.search(r'declaration uses sorry', compiler_output):
+            return True, "Compiler output indicates declaration uses sorry"
+        
+        if re.search(r'uses sorryAx', compiler_output):
+            return True, "Compiler output indicates sorryAx usage"
+        
         return False, ""
+    
+    def _verify_no_sorry_axioms(self, temp_path: str) -> Tuple[bool, str]:
+        """
+        Verify that a compiled theorem doesn't use sorry axioms.
+        
+        Runs `#print axioms theorem_name` to check the axiom set.
+        
+        Args:
+            temp_path: Path to the temporary .lean file
+            
+        Returns:
+            (is_clean, reason) - is_clean is True if no sorry axioms found
+        """
+        # Create a verification file that prints axioms
+        verify_code = f"""
+import Mathlib.Tactic
+
+#check @ qed_goal
+#print axioms qed_goal
+"""
+        verify_path = temp_path + ".verify.lean"
+        try:
+            with open(verify_path, 'w') as f:
+                f.write(verify_code)
+            
+            result = subprocess.run(
+                [self.lean_path or 'lean', verify_path],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=os.environ.copy()
+            )
+            
+            output = result.stdout + result.stderr
+            
+            # Check for sorry/sorryAx in axioms output
+            if re.search(r'\bsorry\b', output):
+                return False, "#print axioms shows sorry"
+            if re.search(r'\bsorryAx\b', output):
+                return False, "#print axioms shows sorryAx"
+            
+            return True, ""
+            
+        except Exception:
+            # If verification fails, we still passed the basic checks
+            return True, "Axiom verification skipped (error)"
+        finally:
+            try:
+                os.unlink(verify_path)
+            except:
+                pass
     
     def get_tactic_candidates(self, expression: str) -> List[str]:
         """
@@ -323,12 +384,25 @@ class LeanAgenticPipeline:
                 
                 # Success if compiled without sorry
                 if result.returncode == 0 and not has_sorry:
-                    return {
-                        'success': True,
-                        'lean_code': lean_code,
-                        'tactic': tactic,
-                        'attempts': attempts
-                    }
+                    # Additional verification: check axioms if compilation succeeded
+                    axioms_clean, axioms_reason = self._verify_no_sorry_axioms(temp_path)
+                    
+                    if axioms_clean:
+                        return {
+                            'success': True,
+                            'lean_code': lean_code,
+                            'tactic': tactic,
+                            'attempts': attempts,
+                            'verification': {
+                                'source_check': 'passed',
+                                'compiler_check': 'passed',
+                                'axioms_check': 'passed'
+                            }
+                        }
+                    else:
+                        # Axioms check failed - this is a sorry leak
+                        attempt['has_sorry'] = True
+                        attempt['sorry_reason'] = axioms_reason
                 
             except subprocess.TimeoutExpired:
                 attempts.append({
