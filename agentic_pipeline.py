@@ -50,8 +50,9 @@ class LeanAgenticPipeline:
             use_mathlib: Whether to use Mathlib tactics
             lean_path: Path to lean executable (or None to search PATH)
         """
-        self.use_mathlib = use_mathlib
         self.lean_path = lean_path or self._find_lean()
+        # Auto-detect Mathlib availability
+        self.use_mathlib = use_mathlib and self._check_mathlib_available()
         self.tactic_candidates = [
             'rfl', 'simp', 'norm_num', 'decide', 'ring', 
             'linarith', 'omega', 'field_simp'
@@ -84,6 +85,40 @@ class LeanAgenticPipeline:
         except:
             pass
         return None
+    
+    def _check_mathlib_available(self) -> bool:
+        """Check if Mathlib is available in the Lean environment."""
+        if not self.lean_path:
+            return False
+        
+        env = os.environ.copy()
+        env["PATH"] = str(Path.home() / ".elan" / "bin") + ":" + env.get("PATH", "")
+        
+        try:
+            # Create a temporary file to test Mathlib import
+            import tempfile
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.lean', delete=False) as f:
+                f.write("import Mathlib.Tactic\n")
+                temp_path = f.name
+            
+            try:
+                result = subprocess.run(
+                    [self.lean_path, temp_path],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    env=env
+                )
+                return result.returncode == 0
+            except:
+                return False
+            finally:
+                try:
+                    os.unlink(temp_path)
+                except:
+                    pass
+        except:
+            return False
     
     def validate_input(self, latex_input: str) -> Tuple[bool, str]:
         """
@@ -344,9 +379,13 @@ class LeanAgenticPipeline:
         # Determine type
         var_type = self._get_var_type(free_vars, expression)
         
+        # Filter out known Lean identifiers from free variables
+        lean_keywords = {'Nat', 'Int', 'Rat', 'Real', 'Bool', 'True', 'False', 'Nat.succ', 'Nat.zero'}
+        filtered_vars = [v for v in free_vars if v not in lean_keywords and not v.startswith('Nat.')]
+        
         # Build theorem statement
-        if free_vars:
-            params = ' '.join([f'({v} : {var_type})' for v in free_vars])
+        if filtered_vars:
+            params = ' '.join([f'({v} : {var_type})' for v in filtered_vars])
             theorem = f"theorem qed_goal {params} : {expression} := by\n"
         else:
             # Add type annotation for negative numbers or division
