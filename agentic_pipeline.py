@@ -140,11 +140,13 @@ class LeanAgenticPipeline:
         Returns:
             (has_sorry, reason)
         """
-        # Check source for sorry (word boundary match)
+        # Check source for sorry or sorryAx (word boundary match)
         if re.search(r'\bsorry\b', lean_source):
             return True, "Lean source contains 'sorry'"
+        if re.search(r'\bsorryAx\b', lean_source):
+            return True, "Lean source contains 'sorryAx'"
         
-        # Check compiler output for sorryAx (word boundary match)
+        # Check compiler output for sorry or sorryAx (word boundary match)
         if re.search(r'\bsorryAx\b', compiler_output):
             return True, "Compiler output mentions 'sorryAx'"
         
@@ -152,8 +154,8 @@ class LeanAgenticPipeline:
         if re.search(r'declaration uses sorry', compiler_output):
             return True, "Compiler output indicates declaration uses sorry"
         
-        if re.search(r'uses sorryAx', compiler_output):
-            return True, "Compiler output indicates sorryAx usage"
+        if re.search(r'\bsorry\b', compiler_output):
+            return True, "Compiler output mentions 'sorry'"
         
         return False, ""
     
@@ -196,6 +198,8 @@ import Mathlib.Tactic
                 return False, "#print axioms shows sorry"
             if re.search(r'\bsorryAx\b', output):
                 return False, "#print axioms shows sorryAx"
+            if re.search(r'declaration uses sorry', output):
+                return False, "#print axioms indicates declaration uses sorry"
             
             return True, ""
             
@@ -388,6 +392,11 @@ import Mathlib.Tactic
                     axioms_clean, axioms_reason = self._verify_no_sorry_axioms(temp_path)
                     
                     if axioms_clean:
+                        # Final guard: reject if lean_code itself contains sorry
+                        if re.search(r'\bsorry\b', lean_code) or re.search(r'\bsorryAx\b', lean_code):
+                            attempt['has_sorry'] = True
+                            attempt['sorry_reason'] = "Generated lean_code contains sorry/sorryAx"
+                            continue
                         return {
                             'success': True,
                             'lean_code': lean_code,
@@ -403,6 +412,7 @@ import Mathlib.Tactic
                         # Axioms check failed - this is a sorry leak
                         attempt['has_sorry'] = True
                         attempt['sorry_reason'] = axioms_reason
+                        continue
                 
             except subprocess.TimeoutExpired:
                 attempts.append({

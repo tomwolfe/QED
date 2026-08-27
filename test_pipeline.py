@@ -260,3 +260,79 @@ def test_select_tactic_linarith_inequality():
     }
     tactic = pipeline.select_tactic(error_info)
     assert tactic == 'linarith'
+
+
+# --- No-sorry gate tests ---
+
+def test_check_for_sorry_source_sorry():
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline()
+    has_sorry, reason = pipeline.check_for_sorry("theorem foo : 1 = 1 := by\n  sorry", "")
+    assert has_sorry is True
+    assert "sorry" in reason.lower()
+
+
+def test_check_for_sorry_source_sorryax():
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline()
+    has_sorry, reason = pipeline.check_for_sorry("theorem foo : 1 = 1 := by\n  exact sorryAx _", "")
+    assert has_sorry is True
+    assert "sorryAx" in reason
+
+
+def test_check_for_sorry_compiler_sorry():
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline()
+    has_sorry, reason = pipeline.check_for_sorry("theorem foo : 1 = 1 := by\n  rfl", "declaration uses sorry")
+    assert has_sorry is True
+    assert "sorry" in reason.lower()
+
+
+def test_check_for_sorry_compiler_sorryax():
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline()
+    has_sorry, reason = pipeline.check_for_sorry("theorem foo : 1 = 1 := by\n  rfl", "uses sorryAx")
+    assert has_sorry is True
+    assert "sorryAx" in reason
+
+
+def test_check_for_sorry_compiler_word_boundary():
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline()
+    # "sorrier" should NOT trigger the sorry check
+    has_sorry, _ = pipeline.check_for_sorry("theorem foo : 1 = 1 := by\n  rfl", "sorrier is not sorry")
+    assert has_sorry is False
+
+
+def test_check_for_sorry_clean():
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline()
+    has_sorry, reason = pipeline.check_for_sorry(
+        "theorem foo : 1 = 1 := by\n  rfl",
+        ""
+    )
+    assert has_sorry is False
+    assert reason == ""
+
+
+def test_check_for_sorry_compiler_broad_match():
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline()
+    has_sorry, reason = pipeline.check_for_sorry(
+        "theorem foo : 1 = 1 := by\n  rfl",
+        "error: unknown identifier 'sorry'"
+    )
+    assert has_sorry is True
+    assert "sorry" in reason.lower()
+
+
+def test_success_implies_no_sorry_in_output():
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline()
+    result = pipeline.run("0 = 0")
+    if result['success']:
+        assert 'sorry' not in result['lean_code']
+        assert 'sorryAx' not in result['lean_code']
+        assert result['verification']['source_check'] == 'passed'
+        assert result['verification']['compiler_check'] == 'passed'
+        assert result['verification']['axioms_check'] == 'passed'
