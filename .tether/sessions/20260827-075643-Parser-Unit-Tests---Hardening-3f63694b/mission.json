@@ -1,0 +1,38 @@
+{
+  "mission": {
+    "name": "Parser Unit Tests & Hardening",
+    "goal": "Prove the parser works in isolation and fix edge cases"
+  },
+  "name": "Parser Unit Tests & Hardening",
+  "goal": "Prove the parser works in isolation and fix edge cases",
+  "context": [],
+  "constraints": [],
+  "verification": {
+    "commands": [
+      "pytest tests/test_parser_unit.py -v"
+    ],
+    "timeout_seconds": 600,
+    "artifacts": [
+      "tests/test_parser_unit.py",
+      "parser.py"
+    ],
+    "assertions": null,
+    "probes": null,
+    "mutation": null,
+    "clean_room": null,
+    "clean_room_copy": null,
+    "auto_probes": null
+  },
+  "recovery": {
+    "max_attempts": null,
+    "strategy": "cumulative"
+  },
+  "review": null,
+  "budget": null,
+  "adapter": null,
+  "adapters": {},
+  "allowed_paths": null,
+  "forbidden_paths": null,
+  "context_files": [],
+  "git_state_guard": null
+}

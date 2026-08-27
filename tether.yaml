@@ -1,6 +1,6 @@
 # Tether project configuration.
 # Precedence: CLI flags > mission file > this file > defaults.
-default_adapter: opencode
+default_adapter: mock
 audit_dir: .tether/sessions
 dry_run: false
 log_level: INFO

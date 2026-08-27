@@ -1,0 +1,13 @@
+{
+  "status": "failed",
+  "logs": "$ opencode run -m opencode/x-preview-f-free 'You are asked to produce a short step-by-step plan for the following mission. Do not modify any files yet.\n\nMission:\n# Mission: Parser Unit Tests & Hardening\nGoal: Prove the parser works in isolation and fix edge cases'\n\u001b[91m\u001b[1mError: \u001b[0m{\n  \"name\": \"UnknownError\",\n  \"data\": {\n    \"message\": \"Unexpected server error. Check server logs for details.\",\n    \"ref\": \"err_9abc5a9c\"\n  }\n}\n",
+  "result": {
+    "exit_code": 1
+  },
+  "changed_files": [],
+  "error": "exit code 1",
+  "usage": {
+    "elapsed_seconds": 0.9874392080237158,
+    "exit_code": 1
+  }
+}

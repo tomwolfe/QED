@@ -1,0 +1,5 @@
+You are asked to produce a short step-by-step plan for the following mission. Do not modify any files yet.
+
+Mission:
+# Mission: Parser Unit Tests & Hardening
+Goal: Prove the parser works in isolation and fix edge cases
