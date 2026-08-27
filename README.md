@@ -6,16 +6,19 @@ A CLI-based agentic pipeline that converts constrained mathematical statements i
 
 - **Input Validation**: Validates LaTeX mathematical statements, rejects non-mathematical text
 - **Lean 4 Integration**: Compiles and executes Lean 4 code automatically
-- **Agentic Tactic Search**: Automatically selects and applies proof tactics
+- **Agentic Tactic Search**: Automatically selects and applies proof tactics based on AST analysis
 - **Audit Trail**: Maintains detailed traces of all attempts and corrections
 - **Error Parsing**: Regex-based parsing of Lean compiler error messages
 - **Max Iteration Control**: Prevents token spiraling with configurable iteration limits
 - **Strict No-Sorry Verification**: Success only when final Lean file contains no `sorry`
+- **AST-Aware Tactic Selection**: Uses parsed AST structure for smarter tactic ordering
+- **Comprehensive Sorry Detection**: Detects `sorry`, `sorryAx`, `Tactic.sorry`, and `Lean.Elab.Tactic.sorry`
+- **Fail-Closed Axiom Verification**: Verifies no sorry axioms in compiled output
 
 ## Requirements
 
 - Python 3.11+
-- Lean 4 (v4.27.0+) via elan
+- Lean 4 (v4.27.0+) via elan (optional - pipeline handles missing Lean gracefully)
 - Mathlib4 (automatically downloaded by Lean compiler)
 
 ## Installation
@@ -192,8 +195,24 @@ theorem qed_goal : -1 + 1 = 0 := by
 ## Running Tests
 
 ```bash
-python3 run_tests.py  # All test cases
-python3 test_pipeline.py  # Identity theorem test
+python3 -m pytest test_pipeline.py -v  # All 54 unit tests
+python3 run_tests.py  # End-to-end tests (requires Lean)
+```
+
+## Tether Integration
+
+This project uses Tether for orchestration and verification. Missions are defined in the `missions/` directory:
+
+- `qed-unit-tests-pass.yaml`: Verifies all unit tests pass
+- `qed-01-no-sorry-gate.yaml`: Hardens sorry detection
+- `qed-02-parser-hardening.yaml`: Improves parser capabilities
+- `qed-03-type-inference.yaml`: Verifies type inference
+- `qed-04-tactic-policy.yaml`: Refactors tactic selection
+- `qed-05-integration-validation.yaml`: End-to-end verification
+
+To run a mission:
+```bash
+./tether/.venv/bin/tether run missions/<mission>.yaml --project-dir . --adapter opencode
 ```
 
 Test results verify:
