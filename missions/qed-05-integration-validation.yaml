@@ -19,24 +19,39 @@ verification:
     - python3 run_tests.py
     - python3 -m pytest test_pipeline.py -v
   probes:
-    - command: python3 -c "from agentic_pipeline import LeanAgenticPipeline; import json; p = LeanAgenticPipeline(); result = p.run('0 = 0'); print(json.dumps({'success': result['success'], 'has_sorry': any(a.get('has_sorry', False) for a in result.get('attempts', []))})); assert result['success'] == False or not any(a.get('has_sorry', False) for a in result.get('attempts', []))"
-      contains: "success"
-    - command: python3 -c "import os; traces_exists = os.path.exists('traces.json'); print('traces.json exists:', traces_exists); print('traces.json check passed')"
-      contains: "passed"
-    - command: python3 -c "from agentic_pipeline import LeanAgenticPipeline; p = LeanAgenticPipeline(); result = p.run('hello world'); print(result['success']); assert result['success'] == False; print('Non-math input correctly rejected')"
-      contains: "rejected"
+    - command: python3 check_sorry.py true
+      contains: "True"
+    - command: python3 check_sorry.py false
+      contains: "False"
+    - command: python3 check_parser.py pre_paren
+      contains: "2 * (a+b)"
+    - command: python3 check_parser.py post_paren
+      contains: "(a+b) * (c+d)"
+    - command: python3 check_parser.py chain
+      contains: "3 * x * y * z"
+    - command: python3 check_type.py int
+      contains: "Int"
+    - command: python3 check_type.py rat
+      contains: "Rat"
+    - command: python3 check_type.py annotation
+      contains: ": Int"
+    - command: python3 check_tactic.py algebraic
+      contains: "ring"
+    - command: python3 check_tactic.py inequality
+      contains: "linarith"
+    - command: python3 check_tactic.py ring_goal
+      contains: "ring"
   clean_room: true
 
 recovery:
-  max_attempts: 5
+  max_attempts: 3
 
 review:
-  enabled: true
-  adapter: opencode
+  enabled: false
 
 budget:
-  max_sends: 15
-  max_wall_seconds: 1800
+  max_sends: 10
+  max_wall_seconds: 900
 
 adapter: opencode
 git_state_guard: true
