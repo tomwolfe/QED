@@ -66,7 +66,16 @@ class LeanAgenticPipeline:
                 timeout=5
             )
             if result.returncode == 0:
-                return result.stdout.strip()
+                lean_path = result.stdout.strip()
+                # Verify lean is actually usable (not just a stub that downloads)
+                # Check if toolchain directory exists
+                toolchain_dir = Path.home() / ".elan" / "toolchains"
+                if toolchain_dir.exists():
+                    # Check if there's at least one toolchain installed
+                    toolchains = [d for d in toolchain_dir.iterdir() if d.is_dir() and not d.name.endswith('.lock')]
+                    if toolchains:
+                        return lean_path
+                return None
         except:
             pass
         return None
@@ -336,6 +345,15 @@ class LeanAgenticPipeline:
             return {
                 'success': False,
                 'error': error_msg,
+                'lean_code': None,
+                'attempts': []
+            }
+        
+        # Check if Lean is available
+        if not self.lean_path:
+            return {
+                'success': False,
+                'error': 'Lean compiler not found. Install elan and run: elan default leanprover/lean4:stable',
                 'lean_code': None,
                 'attempts': []
             }
