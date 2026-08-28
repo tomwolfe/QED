@@ -28,7 +28,7 @@ verification:
 review:
   enabled: true
   required: true
-  adapter: command
+  adapter: opencode
 context_files:
   - README.md
   - IMPLEMENTATION_SUMMARY.md
@@ -40,6 +40,4 @@ budget:
 adapter: opencode
 adapters:
   opencode:
-    command: ["opencode", "run", "-m", "opencode/hy3-free", "{prompt}"]
-  command:
     command: ["opencode", "run", "-m", "opencode/mimo-v2.5-free", "{prompt}"]
