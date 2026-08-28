@@ -54,7 +54,7 @@ python3 agentic_pipeline.py "(a+b)^2 = a^2 + 2ab + b^2"
 ### Advanced Usage
 
 ```bash
-python3 agentic_pipeline.py "theorem statement" --output my_theorem.lean --max-iterations 10
+python3 agentic_pipeline.py "(a+b)^2 = a^2 + 2*a*b + b^2"
 ```
 
 ### Test the Pipeline

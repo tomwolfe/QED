@@ -68,7 +68,7 @@ A CLI-based agentic pipeline that converts constrained mathematical statements (
    - Division expressions -> field_simp first
    - Inequality expressions -> linarith/omega first
    - Polynomial/algebraic expressions -> ring first
-   - Identity statements (both sides structurally equal) short-circuit to rfl/simp/refl
+   - Identity statements (both sides structurally equal) short-circuit to rfl/simp
    - Otherwise defaults to: rfl, simp, norm_num, decide, ring, then remaining candidates
    - Selection is purely AST-driven; there is no special-casing for variable presence or sign
 
