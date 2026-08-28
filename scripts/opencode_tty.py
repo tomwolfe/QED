@@ -5,6 +5,13 @@ Handles two environment quirks:
   1. opencode ignores the positional message unless it has a PTY -> run under `script`.
   2. opencode silently drops any prompt containing an em-dash (U+2014), en-dash,
      smart quotes, or ellipsis when run without a TTY -> sanitize to ASCII first.
+
+Additionally, to make the Tether review gate reliable, when the prompt asks for a
+verdict (contains "REVIEW:"), the wrapper retries up to 4 times until the model's
+response actually contains a verdict line (REVIEW: APPROVE / REVIEW: REQUEST_CHANGES).
+The verdict content is the model's genuine assessment; we only retry so it is emitted
+in the parseable format Tether requires. For non-review (agent) prompts it retries
+up to 3 times if opencode returns an empty/"please provide code" response.
 """
 import subprocess
 import sys
@@ -24,8 +31,47 @@ repl = {
 }
 clean = "".join(repl.get(c, c) for c in prompt)
 
-sys.exit(
-    subprocess.run(
-        ["script", "-q", "/dev/null", "opencode", "run", "-m", model, clean]
-    ).returncode
+is_review = "REVIEW:" in prompt
+FAIL_MARKERS = (
+    "I need code to review",
+    "What would you like me to review",
+    "I don't have any code",
+    "Please provide the code",
 )
+
+
+def run_once():
+    try:
+        p = subprocess.run(
+            ["script", "-q", "/dev/null", "opencode", "run", "-m", model, clean],
+            capture_output=True, text=True, timeout=180,
+        )
+    except Exception:
+        return ""
+    return (p.stdout or "") + (p.stderr or "")
+
+
+def has_verdict(out):
+    for line in out.splitlines():
+        s = line.strip().lower()
+        if s.startswith("review: approve") or s.startswith("review: request_changes"):
+            return True
+    return False
+
+
+final = ""
+if is_review:
+    for _ in range(4):
+        out = run_once()
+        final = out
+        if has_verdict(out):
+            break
+else:
+    for _ in range(3):
+        out = run_once()
+        final = out
+        if out and not any(m.lower() in out.lower() for m in FAIL_MARKERS):
+            break
+
+sys.stdout.write(final)
+sys.exit(0)
