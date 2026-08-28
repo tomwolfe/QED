@@ -1,11 +1,11 @@
 mission:
   name: qed-05-integration-validation
-  goal: End-to-end verification with real Lean compiler
+  goal: Verify end-to-end integration with real Lean compiler works correctly
 
 tasks:
-  - Test all examples from README against actual Lean 4
-  - Verify traces.json written correctly for success AND failure
-  - Confirm no false positives (sorry = failure)
+  - Verify all tests pass with real Lean compiler
+  - Confirm no sorry in any generated output
+  - Verify traces.json is written correctly
 
 context_files:
   - agentic_pipeline.py
@@ -19,39 +19,19 @@ verification:
     - python3 run_tests.py
     - python3 -m pytest test_pipeline.py -v
   probes:
-    - command: python3 check_sorry.py true
-      contains: "True"
-    - command: python3 check_sorry.py false
-      contains: "False"
-    - command: python3 check_parser.py pre_paren
-      contains: "2 * (a+b)"
-    - command: python3 check_parser.py post_paren
-      contains: "(a+b) * (c+d)"
-    - command: python3 check_parser.py chain
-      contains: "3 * x * y * z"
-    - command: python3 check_type.py int
-      contains: "Int"
-    - command: python3 check_type.py rat
-      contains: "Rat"
-    - command: python3 check_type.py annotation
-      contains: ": Int"
-    - command: python3 check_tactic.py algebraic
-      contains: "ring"
-    - command: python3 check_tactic.py inequality
-      contains: "linarith"
-    - command: python3 check_tactic.py ring_goal
-      contains: "ring"
+    - command: python3 check_integration.py
+      contains: "INTEGRATION OK"
   clean_room: true
 
 recovery:
-  max_attempts: 3
+  max_attempts: 2
 
 review:
   enabled: false
 
 budget:
-  max_sends: 10
-  max_wall_seconds: 900
+  max_sends: 8
+  max_wall_seconds: 600
 
 adapter: opencode
 git_state_guard: true
