@@ -181,6 +181,7 @@ The following Tether missions were executed to harden the pipeline:
 3. **qed-02-parser-hardening**: Improved parser to handle dotted identifiers and unary negation before parentheses
 4. **qed-03-type-inference**: Verified type inference and proper type annotations
 5. **qed-04-tactic-policy**: Refactored tactic selection to use AST-based classification
+6. **qed-05-integration-validation**: End-to-end verification with real Lean 4 compiler (v4.0.0) - all 18 end-to-end tests pass
 
 ### Conclusion
 The Lean 4 Agentic Pipeline has been hardened from an MVP to a more robust implementation. Key improvements:
@@ -190,3 +191,5 @@ The Lean 4 Agentic Pipeline has been hardened from an MVP to a more robust imple
 - Sorry detection has been hardened with comprehensive patterns and fail-closed axiom verification
 - 54 unit tests verify all improvements
 - Pipeline gracefully handles missing Lean compiler
+- End-to-end integration verified with real Lean 4 compiler: 0=0, Nat.succ 0=1, x+0=x, -1+1=0 all verify without sorry
+- Mathlib auto-detection: falls back to core-only tactics when Mathlib is unavailable

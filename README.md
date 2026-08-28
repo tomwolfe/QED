@@ -196,7 +196,8 @@ theorem qed_goal : -1 + 1 = 0 := by
 
 ```bash
 python3 -m pytest test_pipeline.py -v  # All 54 unit tests
-python3 run_tests.py  # End-to-end tests (requires Lean)
+python3 run_tests.py  # End-to-end tests (18 tests, requires Lean 4)
+python3 check_integration.py  # Integration check with real Lean compiler
 ```
 
 ## Tether Integration
