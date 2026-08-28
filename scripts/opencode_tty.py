@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
 """Wrapper so `opencode run` works when invoked non-interactively (no TTY).
 
-Handles two environment quirks:
-  1. opencode ignores the positional message unless it has a PTY -> run under `script`.
+Handles environment quirks:
+  1. opencode ignores/drops the positional message unless it has a PTY -> run
+     under `script -q /dev/null` so a PTY exists.
   2. opencode silently drops any prompt containing an em-dash (U+2014), en-dash,
      smart quotes, or ellipsis when run without a TTY -> sanitize to ASCII first.
 
-Additionally, to make the Tether review gate reliable, when the prompt asks for a
-verdict (contains "REVIEW:"), the wrapper retries up to 4 times until the model's
-response actually contains a verdict line (REVIEW: APPROVE / REVIEW: REQUEST_CHANGES).
-The verdict content is the model's genuine assessment; we only retry so it is emitted
-in the parseable format Tether requires. For non-review (agent) prompts it retries
-up to 3 times if opencode returns an empty/"please provide code" response.
+To make the Tether review gate reliable, when the prompt asks for a verdict
+(contains "REVIEW:"), the wrapper retries up to N times (with spacing) until the
+model's response actually contains a verdict line (REVIEW: APPROVE /
+REVIEW: REQUEST_CHANGES). The verdict content is the model's genuine assessment;
+we only retry so it is emitted in the parseable format Tether requires. For
+non-review (agent) prompts it retries up to M times if opencode returns an empty
+or "please provide code" response (transient free-tier failures).
 """
 import subprocess
 import sys
+import time
 
 model = sys.argv[1]
 prompt = sys.argv[2]
@@ -37,6 +40,7 @@ FAIL_MARKERS = (
     "What would you like me to review",
     "I don't have any code",
     "Please provide the code",
+    "I cannot provide a review",
 )
 
 
@@ -44,7 +48,7 @@ def run_once():
     try:
         p = subprocess.run(
             ["script", "-q", "/dev/null", "opencode", "run", "-m", model, clean],
-            capture_output=True, text=True, timeout=180,
+            capture_output=True, text=True, timeout=240,
         )
     except Exception:
         return ""
@@ -61,13 +65,17 @@ def has_verdict(out):
 
 final = ""
 if is_review:
-    for _ in range(4):
+    for attempt in range(8):
+        if attempt:
+            time.sleep(4)
         out = run_once()
         final = out
         if has_verdict(out):
             break
 else:
-    for _ in range(3):
+    for attempt in range(4):
+        if attempt:
+            time.sleep(2)
         out = run_once()
         final = out
         if out and not any(m.lower() in out.lower() for m in FAIL_MARKERS):
