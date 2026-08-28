@@ -40,6 +40,6 @@ budget:
 adapter: command
 adapters:
   opencode:
-    command: ["opencode", "run", "-m", "opencode/mimo-v2.5-free", "{prompt}"]
+    command: ["/Users/tom/Documents/apps/QED/scripts/opencode_tty.py", "opencode/mimo-v2.5-free", "{prompt}"]
   command:
-    command: ["opencode", "run", "-m", "opencode/hy3-free", "{prompt}"]
+    command: ["/Users/tom/Documents/apps/QED/scripts/opencode_tty.py", "opencode/mimo-v2.5-free", "{prompt}"]
