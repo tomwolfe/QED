@@ -1,0 +1,51 @@
+mission:
+  name: qed-mutation-strength
+  goal: |
+    QED is a Lean 4 agentic pipeline. Its test suite (test_pipeline.py) must be
+    strong enough to catch regressions in the core verification logic. This
+    mission (1) extends QED's core with a meaningful, behavior-preserving
+    improvement that is exercised by new unit tests, and (2) lets Tether's
+    mutation gate PROVE whether the test suite catches regressions in the
+    changed code. A kill rate below 0.6 fails the mission, signaling weak tests
+    that must be hardened.
+
+    Implement the change primarily in parser.py (and only touch
+    agentic_pipeline.py if strictly needed). Concretely, add a new, well-tested
+    public capability to the parser, for example a `statement_kind(latex)`
+    classifier that returns one of 'identity' | 'equality' | 'inequality' |
+    'other' derived from the parsed AST, and optionally use it to sharpen tactic
+    selection. Keep all existing behavior intact.
+tasks:
+  - Audit parser.py for a self-contained function to add or extend.
+  - Implement the new capability with clear, documented behavior.
+  - Add real behavioral unit tests to test_pipeline.py covering edge cases.
+  - Ensure `python3 -m pytest test_pipeline.py -v` is fully green.
+context:
+  - "parser.py exposes parse_equation, normalize_implicit_multiplication_expression, contains_op, is_inequality, has_numeric_ops, has_polynomial_structure, and AST nodes BinOp/Var/Num/Eq/Ne/Lt/Le/Gt/Ge."
+  - "test_pipeline.py is a pytest suite; run it with `python3 -m pytest test_pipeline.py -v`."
+  - "Tether will mutate the .py files you change and re-run the suite; surviving mutants = untested regressions."
+constraints:
+  - Modify only parser.py and/or agentic_pipeline.py (source) plus test_pipeline.py (tests).
+  - Do NOT change the AST node class hierarchy or remove existing public functions/signatures.
+  - Keep `python3 -m pytest test_pipeline.py -v` 100% green.
+  - New tests must be genuine behavioral assertions (no `assert True` / tautologies).
+  - Maintain backward compatibility; documented behavior must remain correct.
+verification:
+  commands:
+    - python3 -m pytest test_pipeline.py -v
+  # Bound each verification/mutation re-run so a mutant that turns a
+  # `while changed:` loop into an infinite loop is killed quickly (and
+  # counts as killed) instead of spinning for the default 600s.
+  timeout_seconds: 60
+  mutation:
+    enabled: true
+    fail_below: 0.6
+    max_mutants: 30
+recovery:
+  max_attempts: 3
+budget:
+  max_sends: 10
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/mimo-v2.5-free", "{prompt}"]

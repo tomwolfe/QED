@@ -572,6 +572,65 @@ def parse(input_string: str) -> Dict[str, Any]:
     return result
 
 
+def ast_to_latex(node) -> str:
+    """Convert an AST node back to a canonical LaTeX-like string."""
+    if node is None:
+        return ''
+    if isinstance(node, Num):
+        return str(node.value)
+    if isinstance(node, Var):
+        return node.name
+    if isinstance(node, Neg):
+        inner = ast_to_latex(node.expr)
+        return f'-{inner}'
+    if isinstance(node, BinOp):
+        left = ast_to_latex(node.left)
+        right = ast_to_latex(node.right)
+        if node.op == '^':
+            return f'{left}^{{{right}}}'
+        return f'{left} {node.op} {right}'
+    if isinstance(node, Eq):
+        return f'{ast_to_latex(node.left)} = {ast_to_latex(node.right)}'
+    if isinstance(node, Ne):
+        return f'{ast_to_latex(node.left)} != {ast_to_latex(node.right)}'
+    if isinstance(node, Lt):
+        return f'{ast_to_latex(node.left)} < {ast_to_latex(node.right)}'
+    if isinstance(node, Le):
+        return f'{ast_to_latex(node.left)} <= {ast_to_latex(node.right)}'
+    if isinstance(node, Gt):
+        return f'{ast_to_latex(node.left)} > {ast_to_latex(node.right)}'
+    if isinstance(node, Ge):
+        return f'{ast_to_latex(node.left)} >= {ast_to_latex(node.right)}'
+    return ''
+
+
+def _is_identity(node: Eq) -> bool:
+    """Return True if the Eq node represents a structural identity (left == right)."""
+    if not isinstance(node, Eq):
+        return False
+    return ast_to_latex(node.left) == ast_to_latex(node.right)
+
+
+def statement_kind(latex: str) -> str:
+    """Classify a LaTeX statement as 'identity', 'equality', 'inequality', or 'other'.
+
+    - 'identity':    Eq node where both sides are structurally identical (e.g. x = x)
+    - 'equality':    Eq node where sides differ (e.g. x + 1 = 2)
+    - 'inequality':  Ne, Lt, Le, Gt, or Ge node
+    - 'other':       unparseable or bare expression with no relation operator
+    """
+    eq, _ = parse_equation(latex)
+    if eq is None:
+        return 'other'
+    if isinstance(eq, Eq):
+        if _is_identity(eq):
+            return 'identity'
+        return 'equality'
+    if isinstance(eq, (Ne, Lt, Le, Gt, Ge)):
+        return 'inequality'
+    return 'other'
+
+
 # Test the parser
 if __name__ == "__main__":
     test_cases = [

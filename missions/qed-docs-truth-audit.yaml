@@ -1,0 +1,45 @@
+mission:
+  name: qed-docs-truth-audit
+  goal: |
+    Ensure QED's documentation matches reality. Read the source
+    (agentic_pipeline.py and parser.py) and audit every feature and flag
+    documented in README.md and IMPLEMENTATION_SUMMARY.md. Where the docs
+    describe a feature/flag that does not exist or behaves differently, FIX
+    EITHER the docs (align the wording) OR the code (implement the documented
+    behavior) so they agree. Keep all tests green. An independent review gate
+    must then approve the change.
+tasks:
+  - Read README.md, IMPLEMENTATION_SUMMARY.md, agentic_pipeline.py, and parser.py.
+  - Enumerate every documented feature, flag, and CLI option; verify it exists and behaves as described.
+  - Repair doc/code mismatches (prefer minimal, backward-compatible fixes).
+  - Ensure `python3 -m pytest test_pipeline.py -v` stays green.
+context:
+  - "README.md and IMPLEMENTATION_SUMMARY.md are the user-facing source of truth."
+  - "agentic_pipeline.py defines the CLI (`python3 agentic_pipeline.py '<stmt>'`) and pipeline behavior."
+  - "parser.py provides the AST/normalization used by the pipeline."
+constraints:
+  - Do not remove documented public behavior; align docs and code instead.
+  - Keep `python3 -m pytest test_pipeline.py -v` 100% green.
+  - Changes must be backward compatible.
+  - Prefer editing docs over code when the code is correct but the docs are merely imprecise, unless the gap is a genuine bug.
+verification:
+  commands:
+    - python3 -m pytest test_pipeline.py -v
+review:
+  enabled: true
+  required: true
+  adapter: command
+context_files:
+  - README.md
+  - IMPLEMENTATION_SUMMARY.md
+  - agentic_pipeline.py
+recovery:
+  max_attempts: 3
+budget:
+  max_sends: 12
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/hy3-free", "{prompt}"]
+  command:
+    command: ["opencode", "run", "-m", "opencode/mimo-v2.5-free", "{prompt}"]

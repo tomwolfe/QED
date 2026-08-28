@@ -423,6 +423,9 @@ from parser import (
     has_numeric_ops,
     has_polynomial_structure,
     parse_equation,
+    ast_to_latex,
+    _is_identity,
+    statement_kind,
     BinOp,
     Var,
     Num,
@@ -504,3 +507,165 @@ def test_tactic_candidates_ab_not_false_positive():
     candidates = pipeline.get_tactic_candidates("ab = a * b")
     # Should use default order (no ring priority), since there's no ^ operator
     assert candidates[0] == 'rfl'
+
+
+# --- ast_to_latex tests ---
+
+def test_ast_to_latex_var():
+    assert ast_to_latex(Var('x')) == 'x'
+
+
+def test_ast_to_latex_num():
+    assert ast_to_latex(Num(3)) == '3'
+
+
+def test_ast_to_latex_binop_add():
+    node = BinOp(Var('x'), '+', Var('y'))
+    assert ast_to_latex(node) == 'x + y'
+
+
+def test_ast_to_latex_binop_mul():
+    node = BinOp(Var('a'), '*', Var('b'))
+    assert ast_to_latex(node) == 'a * b'
+
+
+def test_ast_to_latex_binop_power():
+    node = BinOp(Var('x'), '^', Num(2))
+    assert ast_to_latex(node) == 'x^{2}'
+
+
+def test_ast_to_latex_neg():
+    node = Neg(Var('x'))
+    assert ast_to_latex(node) == '-x'
+
+
+def test_ast_to_latex_eq():
+    node = Eq(Var('x'), Var('y'))
+    assert ast_to_latex(node) == 'x = y'
+
+
+def test_ast_to_latex_ne():
+    node = Ne(Var('x'), Var('y'))
+    assert ast_to_latex(node) == 'x != y'
+
+
+def test_ast_to_latex_lt():
+    node = Lt(Var('x'), Var('y'))
+    assert ast_to_latex(node) == 'x < y'
+
+
+def test_ast_to_latex_le():
+    node = Le(Var('x'), Var('y'))
+    assert ast_to_latex(node) == 'x <= y'
+
+
+def test_ast_to_latex_gt():
+    node = Gt(Var('x'), Var('y'))
+    assert ast_to_latex(node) == 'x > y'
+
+
+def test_ast_to_latex_ge():
+    node = Ge(Var('x'), Var('y'))
+    assert ast_to_latex(node) == 'x >= y'
+
+
+def test_ast_to_latex_none():
+    assert ast_to_latex(None) == ''
+
+
+def test_ast_to_latex_nested():
+    node = BinOp(BinOp(Var('a'), '+', Var('b')), '*', Var('c'))
+    assert ast_to_latex(node) == 'a + b * c'
+
+
+# --- _is_identity tests ---
+
+def test_is_identity_true():
+    node = Eq(Var('x'), Var('x'))
+    assert _is_identity(node) is True
+
+
+def test_is_identity_false():
+    node = Eq(Var('x'), Var('y'))
+    assert _is_identity(node) is False
+
+
+def test_is_identity_complex_true():
+    node = Eq(BinOp(Var('a'), '+', Var('b')), BinOp(Var('a'), '+', Var('b')))
+    assert _is_identity(node) is True
+
+
+def test_is_identity_complex_false():
+    node = Eq(BinOp(Var('a'), '+', Var('b')), BinOp(Var('a'), '-', Var('b')))
+    assert _is_identity(node) is False
+
+
+def test_is_identity_non_eq():
+    node = Ne(Var('x'), Var('x'))
+    assert _is_identity(node) is False
+
+
+# --- statement_kind tests ---
+
+def test_statement_kind_identity_x_eq_x():
+    assert statement_kind('x = x') == 'identity'
+
+
+def test_statement_kind_identity_complex():
+    assert statement_kind('a + b = a + b') == 'identity'
+
+
+def test_statement_kind_identity_multiplication():
+    assert statement_kind('x * 1 = x * 1') == 'identity'
+
+
+def test_statement_kind_equality():
+    assert statement_kind('x + 1 = 2') == 'equality'
+
+
+def test_statement_kind_equality_not_identity():
+    assert statement_kind('x + 1 = x + 2') == 'equality'
+
+
+def test_statement_kind_inequality_lt():
+    assert statement_kind('x < y') == 'inequality'
+
+
+def test_statement_kind_inequality_le():
+    assert statement_kind('x <= y') == 'inequality'
+
+
+def test_statement_kind_inequality_gt():
+    assert statement_kind('x > y') == 'inequality'
+
+
+def test_statement_kind_inequality_ge():
+    assert statement_kind('x >= y') == 'inequality'
+
+
+def test_statement_kind_inequality_ne():
+    assert statement_kind('x != y') == 'inequality'
+
+
+def test_statement_kind_other_bare_expression():
+    assert statement_kind('x + 1') == 'other'
+
+
+def test_statement_kind_other_number():
+    assert statement_kind('42') == 'other'
+
+
+def test_statement_kind_identity_not_inequality():
+    result = statement_kind('x = x')
+    assert result != 'inequality'
+
+
+def test_statement_kind_eq_ne_distinct():
+    eq_result = statement_kind('x = y')
+    ne_result = statement_kind('x != y')
+    assert eq_result == 'equality'
+    assert ne_result == 'inequality'
+
+
+def test_statement_kind_identity_power():
+    assert statement_kind('x^1 = x^1') == 'identity'

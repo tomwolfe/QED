@@ -1,0 +1,38 @@
+mission:
+  name: qed-cleanroom-integrity
+  goal: |
+    Prove QED works in isolation, free of local environment artifacts, by
+    running its full test suite and behavioral probes inside Tether's clean
+    room (a throwaway checkout of the committed code). The pipeline must (a)
+    verify a valid theorem and (b) reject non-mathematical input, relying only
+    on the committed code and the standard Lean/elan toolchain -- never on
+    untracked or gitignored local files.
+tasks:
+  - Confirm the committed QED behaves correctly; do NOT modify source files.
+  - If any probe or test reveals a real defect in clean-room isolation, fix it
+    minimally so the clean-room verification passes.
+context:
+  - "QED is run via `python3 agentic_pipeline.py '<statement>'>`."
+  - "Clean-room verification runs `python3 run_tests.py` and two probes in an isolated checkout of the committed tree."
+  - "Probe 1: `python3 agentic_pipeline.py '0 = 0'` must contain 'Verification Successful'."
+  - "Probe 2: `python3 agentic_pipeline.py 'hello world'` must contain 'Non-mathematical input'."
+constraints:
+  - Prefer leaving source unchanged; any fix must keep all existing tests green.
+  - Do not add new dependencies or external network calls beyond what Lean/elan already use.
+verification:
+  commands:
+    - python3 run_tests.py
+  clean_room: true
+  probes:
+    - command: "python3 agentic_pipeline.py '0 = 0'"
+      contains: "Verification Successful"
+    - command: "python3 agentic_pipeline.py 'hello world'"
+      contains: "Non-mathematical input"
+recovery:
+  max_attempts: 3
+budget:
+  max_sends: 8
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/mimo-v2.5-free", "{prompt}"]

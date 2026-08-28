@@ -22,6 +22,7 @@ from parser import (
     is_inequality,
     has_numeric_ops,
     has_polynomial_structure,
+    statement_kind,
     BinOp,
     Var,
     Num,
@@ -287,6 +288,15 @@ class LeanAgenticPipeline:
             Ordered list of tactic candidates
         """
         candidates = []
+        
+        # Use statement_kind for identity short-circuit
+        kind = statement_kind(expression)
+        if kind == 'identity':
+            candidates.extend(['rfl', 'simp', 'refl'])
+            for tactic in self.tactic_candidates:
+                if tactic not in candidates:
+                    candidates.append(tactic)
+            return candidates
         
         # Parse expression to get AST for classification
         eq, _ = parse_equation(expression)

@@ -68,9 +68,9 @@ A CLI-based agentic pipeline that converts constrained mathematical statements (
    - Division expressions -> field_simp first
    - Inequality expressions -> linarith/omega first
    - Polynomial/algebraic expressions -> ring first
-   - Natural number patterns -> omega/simp
-   - Negative numbers -> norm_num/ring
-   - Variable presence boosts ring and simp priority
+   - Identity statements (both sides structurally equal) short-circuit to rfl/simp/refl
+   - Otherwise defaults to: rfl, simp, norm_num, decide, ring, then remaining candidates
+   - Selection is purely AST-driven; there is no special-casing for variable presence or sign
 
 10. **Type Inference (Improved)** ✓
     - _suggest_type returns Nat for non-negative expressions, Int for negative, Rat for division

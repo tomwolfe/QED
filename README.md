@@ -71,7 +71,7 @@ python3 run_tests.py
 3. **Agentic Tactic Search**:
    - Calls the Lean compiler
    - Parses stderr for error messages and goal states
-   - Selects appropriate tactics (ring, linarith, induction, etc.)
+   - Selects appropriate tactics (ring, linarith, etc.)
    - Appends tactics and repeats until success or max iterations
    - **Strict**: Only reports success if final proof contains no `sorry`
 4. **Audit Trail**: Logs all attempts in `traces.json`
