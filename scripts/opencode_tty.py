@@ -73,9 +73,9 @@ if is_review:
         if has_verdict(out):
             break
 else:
-    for attempt in range(4):
+    for attempt in range(6):
         if attempt:
-            time.sleep(2)
+            time.sleep(4)
         out = run_once()
         final = out
         if out and not any(m.lower() in out.lower() for m in FAIL_MARKERS):
