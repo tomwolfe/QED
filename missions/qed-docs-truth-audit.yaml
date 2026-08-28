@@ -37,7 +37,9 @@ recovery:
   max_attempts: 3
 budget:
   max_sends: 12
-adapter: opencode
+adapter: command
 adapters:
   opencode:
     command: ["opencode", "run", "-m", "opencode/mimo-v2.5-free", "{prompt}"]
+  command:
+    command: ["opencode", "run", "-m", "opencode/hy3-free", "{prompt}"]
