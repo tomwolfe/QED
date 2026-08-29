@@ -19,15 +19,15 @@ A CLI-based agentic pipeline that converts constrained mathematical statements (
    - Graceful handling when Lean is not installed
 
 3. **Agentic Tactic Search** ✓
-   - Automatic tactic selection based on AST structure and goal state
+   - Automatic tactic ordering based on parsed AST structure
    - Supported tactics: rfl, simp, norm_num, decide, ring, linarith, omega, field_simp
    - Max 15 iterations to prevent token spiraling
    - **Critical**: Each tactic attempt actually modifies the Lean proof; success requires no `sorry` in final output
 
-4. **Error Parsing & Handling** ✓
-   - Regex-based parsing of Lean compiler output
-   - Extracts line numbers, error messages, goals, and expected types
-   - Handles both stdout and stderr for comprehensive error capture
+4. **Error Capture & Handling** ✓
+   - Captures both stdout and stderr from Lean compiler
+   - Checks exit code and detects `sorry`/`sorryAx` in compiler output
+   - Records detailed attempt history for audit trail
 
 5. **Strict No-Sorry Success Criterion** ✓ (Hardened via Tether Mission qed-01)
    - Pipeline never reports success if final Lean file contains `sorry`
@@ -39,7 +39,7 @@ A CLI-based agentic pipeline that converts constrained mathematical statements (
 
 6. **Audit Trail** ✓
    - Detailed JSON logging of all attempts
-   - Tracks iterations, exit codes, errors, and selected tactics
+   - Tracks iterations, exit codes, sorry reasons, and selected tactics
    - Writes `traces.json` on both success and failure
 
 7. **Formula Parser (Hardened)** ✓ (Hardened via Tether Mission qed-02)
@@ -77,7 +77,7 @@ A CLI-based agentic pipeline that converts constrained mathematical statements (
     - _get_var_type considers expression context for variable typing
     - Proper type selection prevents Lean type mismatch errors
 
-### Test Results (54 tests passing)
+### Test Results (88 tests passing)
 
 **Parser Hardening Tests** ✓
 - "2ab" normalized correctly to "2 * a * b" ✓
@@ -120,7 +120,7 @@ A CLI-based agentic pipeline that converts constrained mathematical statements (
 .
 ├── agentic_pipeline.py    # Main pipeline with intelligent tactic selection
 ├── parser.py              # Hardened recursive descent parser
-├── test_pipeline.py       # 54 comprehensive tests
+├── test_pipeline.py       # 88 comprehensive tests
 ├── run_tests.py           # End-to-end test suite
 ├── check_sorry.py         # Helper script for sorry detection verification
 ├── check_parser.py        # Helper script for parser verification
@@ -187,9 +187,9 @@ The following Tether missions were executed to harden the pipeline:
 The Lean 4 Agentic Pipeline has been hardened from an MVP to a more robust implementation. Key improvements:
 - Parser now correctly handles implicit multiplication chains, paren-adjacent operations, nested parentheses, and dotted identifiers
 - Type inference produces context-appropriate types (Nat/Int/Rat) instead of defaulting to Int
-- Tactic selection uses parsed AST structure and goal state for smarter ordering (not keyword-based)
+- Tactic selection uses parsed AST structure for smarter ordering (not keyword-based)
 - Sorry detection has been hardened with comprehensive patterns and fail-closed axiom verification
-- 54 unit tests verify all improvements
+- 88 unit tests verify all improvements
 - Pipeline gracefully handles missing Lean compiler
 - End-to-end integration verified with real Lean 4 compiler: 0=0, Nat.succ 0=1, x+0=x, -1+1=0 all verify without sorry
 - Mathlib auto-detection: falls back to core-only tactics when Mathlib is unavailable

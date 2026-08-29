@@ -8,7 +8,7 @@ A CLI-based agentic pipeline that converts constrained mathematical statements i
 - **Lean 4 Integration**: Compiles and executes Lean 4 code automatically
 - **Agentic Tactic Search**: Automatically selects and applies proof tactics based on AST analysis
 - **Audit Trail**: Maintains detailed traces of all attempts and corrections
-- **Error Parsing**: Regex-based parsing of Lean compiler error messages
+- **Sorry Detection**: Regex-based detection of `sorry` and `sorryAx` in compiler output and source
 - **Max Iteration Control**: Prevents token spiraling with configurable iteration limits
 - **Strict No-Sorry Verification**: Success only when final Lean file contains no `sorry`
 - **AST-Aware Tactic Selection**: Uses parsed AST structure for smarter tactic ordering
@@ -70,16 +70,16 @@ python3 run_tests.py
 2. **Translation**: Generates a Lean 4 theorem statement with proper imports and variable declarations
 3. **Agentic Tactic Search**:
    - Calls the Lean compiler
-   - Parses stderr for error messages and goal states
-   - Selects appropriate tactics (ring, linarith, etc.)
-   - Appends tactics and repeats until success or max iterations
+   - Checks exit code and detects `sorry`/`sorryAx` in output
+   - Tries ordered tactic candidates (rfl, simp, ring, etc.) based on AST analysis
+   - Repeats until success or max iterations
    - **Strict**: Only reports success if final proof contains no `sorry`
 4. **Audit Trail**: Logs all attempts in `traces.json`
 5. **Success Criteria**: Returns exit code 0 only when verified without `sorries`
 
 ## Supported Tactic Types
 
-The pipeline automatically selects tactics based on error patterns:
+The pipeline automatically orders tactics based on the AST structure of the input expression:
 
 - **rfl**: For reflexive equalities (e.g., `0 = 0`, `Nat.succ 0 = 1`)
 - **simp**: For simplification with annotated hypotheses
@@ -108,8 +108,14 @@ On failure:
 ```
 .
 ├── agentic_pipeline.py    # Main pipeline implementation
-├── test_pipeline.py        # Basic identity theorem test
-├── run_tests.py            # Comprehensive test suite
+├── parser.py              # Recursive descent parser
+├── test_pipeline.py       # 88 comprehensive unit tests
+├── run_tests.py           # End-to-end test suite
+├── check_sorry.py         # Helper script for sorry detection verification
+├── check_parser.py        # Helper script for parser verification
+├── check_type.py          # Helper script for type inference verification
+├── check_tactic.py        # Helper script for tactic selection verification
+├── check_integration.py   # Integration check with real Lean compiler
 ├── README.md              # This file
 ├── IMPLEMENTATION_SUMMARY.md  # Implementation status report
 └── traces.json            # Generated audit trail
@@ -195,7 +201,7 @@ theorem qed_goal : -1 + 1 = 0 := by
 ## Running Tests
 
 ```bash
-python3 -m pytest test_pipeline.py -v  # All 54 unit tests
+python3 -m pytest test_pipeline.py -v  # All 88 unit tests
 python3 run_tests.py  # End-to-end tests (18 tests, requires Lean 4)
 python3 check_integration.py  # Integration check with real Lean compiler
 ```
