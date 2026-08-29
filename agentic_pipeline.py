@@ -23,6 +23,8 @@ from parser import (
     has_numeric_ops,
     has_polynomial_structure,
     statement_kind,
+    is_ode,
+    involves_derivative,
     BinOp,
     Var,
     Num,
@@ -56,7 +58,7 @@ class LeanAgenticPipeline:
         self.use_mathlib = use_mathlib and self._check_mathlib_available()
         self.tactic_candidates = [
             'rfl', 'simp', 'norm_num', 'decide', 'ring', 
-            'linarith', 'omega', 'field_simp'
+            'linarith', 'omega', 'field_simp', 'dsimp'
         ]
     
     def _find_lean(self) -> Optional[str]:
@@ -298,6 +300,20 @@ class LeanAgenticPipeline:
                     candidates.append(tactic)
             return candidates
         
+        # ODE / rate-of-change inputs: prioritize the Mathlib tactics that
+        # handle derivatives, division and algebraic structure in the RHS.
+        # ``dsimp`` normalizes the derivative head, ``field_simp`` clears the
+        # divisions (C_p = A/V, C_tissue/Kp), and ``ring`` closes the
+        # resulting polynomial/field identities. This is the bridge from
+        # "algebraic identity checking" to genuine formal-ODE verification.
+        if is_ode(expression) or involves_derivative(expression):
+            candidates.extend(['dsimp', 'field_simp', 'ring', 'simp',
+                               'norm_num', 'decide'])
+            for tactic in self.tactic_candidates:
+                if tactic not in candidates:
+                    candidates.append(tactic)
+            return candidates
+        
         # Parse expression to get AST for classification
         eq, _ = parse_equation(expression)
         
@@ -355,6 +371,12 @@ class LeanAgenticPipeline:
         # Check goal for ring patterns (polynomial structure or algebraic ops)
         if has_polynomial_structure(goal_ast) or 'ring' in goal.lower():
             return 'ring'
+
+        # Formal-ODE goals: derivatives with division (C_p = A/V, C_tissue/Kp)
+        # are field identities; clear the divisions with field_simp first,
+        # then let ring close them.
+        if involves_derivative(goal) or contains_op(goal_ast, '/'):
+            return 'field_simp'
         
         # Check for inequality patterns
         if is_inequality(goal_ast):

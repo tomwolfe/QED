@@ -12,6 +12,7 @@ A CLI-based agentic pipeline that converts constrained mathematical statements i
 - **Max Iteration Control**: Prevents token spiraling with configurable iteration limits
 - **Strict No-Sorry Verification**: Success only when final Lean file contains no `sorry`
 - **AST-Aware Tactic Selection**: Uses parsed AST structure for smarter tactic ordering
+- **ODE / Rate-of-Change Awareness**: Recognizes `d<var>/dt = <rhs>` ODEs (`parser.is_ode`, `parser.parse_ode`) and derivative notation anywhere (`parser.involves_derivative`); `get_tactic_candidates` prioritizes `dsimp` / `field_simp` / `ring` for derivative / rate-of-change inputs
 - **Comprehensive Sorry Detection**: Detects `sorry`, `sorryAx`, `Tactic.sorry`, and `Lean.Elab.Tactic.sorry`
 - **Fail-Closed Axiom Verification**: Verifies no sorry axioms in compiled output
 
@@ -88,7 +89,8 @@ The pipeline automatically orders tactics based on the AST structure of the inpu
 - **ring**: For algebraic simplifications (requires Mathlib)
 - **linarith**: For inequality and arithmetic proofs (requires Mathlib)
 - **omega**: For quantifier-free nonlinear arithmetic (requires Mathlib)
-- **field_simp**: For field operations
+- **field_simp**: For field operations (required for PBPK perfusion terms with division, e.g. `C_p = A_central / V_central`)
+- **dsimp**: For simplifying derivative / rate-of-change heads in formal-ODE inputs
 
 ## Output
 
@@ -216,6 +218,24 @@ This project uses Tether for orchestration and verification. Missions are define
 - `qed-03-type-inference.yaml`: Verifies type inference
 - `qed-04-tactic-policy.yaml`: Refactors tactic selection
 - `qed-05-integration-validation.yaml`: End-to-end verification
+- `veritrial-formal-gate.yaml` (in `tether/missions`): Enforced clean-room PBPK formal-verification gate (runs the VeriTrial->QED bridge, then `verify_pbpk_lemmas.py`, with required review + retry-on-rejection)
+
+### Formal ODE verification (VeriTrial PBPK)
+
+The pipeline recognizes PBPK ODEs of the form `d<var>/dt = <rhs>` and derivative
+notation anywhere in the input (`parser.is_ode`, `parser.involves_derivative`).
+For such inputs `get_tactic_candidates` leads with `dsimp`, then `field_simp`,
+then `ring` — the tactic chain QED uses (with Mathlib) to prove the
+perfusion-limited uptake distributive law:
+
+```
+Q * (C_p - C_tissue / Kp) = Q * C_p - Q * C_tissue / Kp
+```
+
+In a Mathlib-free environment the bridge still emits *instantiated numeric
+witnesses* of this law (e.g. `3 * (5 - 4 / 2) = 3 * 5 - 3 * 4 / 2`) which the
+pipeline proves with the core `decide` tactic — a genuine, non-reflexive proof
+under the strict no-`sorry` policy. See `tether/missions/veritrial-formal-gate.yaml`.
 
 To run a mission:
 ```bash

@@ -501,6 +501,22 @@ def is_ode(expression: str) -> bool:
     return _ODE_RE.match((expression or "").strip()) is not None
 
 
+def involves_derivative(expression: str) -> bool:
+    """Return True if ``expression`` mentions a time-derivative / rate-of-change
+    term such as ``dX/dt`` or ``dA_liver/dt`` anywhere in the string.
+
+    This is used by the agentic pipeline to recognize formal-ODE inputs (not
+    just the canonical ``d<var>/dt = <rhs>`` head form) so it can prioritize
+    Mathlib tactics that handle derivatives, division and algebraic structure
+    in the right-hand side (``dsimp``, ``field_simp``, ``ring``).
+    """
+    if is_ode(expression):
+        return True
+    normalized = (expression or "").strip()
+    # Match d<ident>/d<ident> anywhere (e.g. dA_liver/dt, dC/dt, dState/dx).
+    return re.search(r'\bd[A-Za-z_]\w*/d[A-Za-z_]\w*', normalized) is not None
+
+
 def extract_free_variables(node) -> List[str]:
     """Extract free variable names from an AST node."""
     vars_set = set()

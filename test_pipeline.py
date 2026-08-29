@@ -236,6 +236,59 @@ def test_tactic_candidates_division():
     assert candidates.index('field_simp') < candidates.index('ring')
 
 
+def test_tactic_candidates_ode_prioritizes_ode_tactics():
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline()
+    candidates = pipeline.get_tactic_candidates('dA_liver/dt = Q * (C_p - C_liver / Kp)')
+    # ODE inputs must surface the Mathlib ODE tactics.
+    assert 'dsimp' in candidates
+    assert 'field_simp' in candidates
+    # Ordering: dsimp leads, then field_simp, then ring, before the generic simp.
+    assert candidates.index('dsimp') < candidates.index('field_simp')
+    assert candidates.index('field_simp') < candidates.index('ring')
+    assert candidates.index('ring') < candidates.index('simp')
+
+
+def test_tactic_candidates_ode_involves_derivative_notation():
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline()
+    # Derivative notation anywhere (not just d<var>/dt = <rhs>) triggers ODE policy.
+    candidates = pipeline.get_tactic_candidates('dA_gut/dt + dA_central/dt = 0')
+    assert 'dsimp' in candidates
+    assert 'field_simp' in candidates
+    assert 'ring' in candidates
+
+
+def test_tactic_candidates_ode_not_identity_shortcut():
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline()
+    # An ODE equation is not a textual identity, so it must take the ODE branch
+    # (which leads with dsimp) rather than the identity short-circuit (rfl).
+    candidates = pipeline.get_tactic_candidates('dA_gut/dt = -ka * A_gut')
+    assert candidates[0] == 'dsimp'
+
+
+def test_select_tactic_field_simp_for_derivative_goal():
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline()
+    error_info = {
+        "error": "type mismatch",
+        "goal": "⊢ dA_liver/dt = Q * (C_p - C_liver / Kp)",
+        "term": "dA_liver",
+        "expected_type": "Real",
+    }
+    tactic = pipeline.select_tactic(error_info)
+    assert tactic == 'field_simp'
+
+
+def test_involves_derivative_parser():
+    from parser import involves_derivative
+    assert involves_derivative('dA_liver/dt = Q * (C_p - C_liver / Kp)') is True
+    assert involves_derivative('Q * (C_p - C_tissue / Kp)') is False
+    assert involves_derivative('ka * A_gut = ka * A_gut') is False
+
+
+
 def test_select_tactic_ring_goal():
     from agentic_pipeline import LeanAgenticPipeline
     pipeline = LeanAgenticPipeline()
