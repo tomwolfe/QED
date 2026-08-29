@@ -4,6 +4,11 @@
 import re
 from typing import List, Optional, Tuple, Dict, Any
 
+# Matches the left-hand side of an ODE of the form d<var>/dt = <rhs>.
+# Captures the differentiated variable name (group 1) and the right-hand
+# side expression (group 2). Whitespace around tokens is tolerated.
+_ODE_RE = re.compile(r"^\s*d\s*([A-Za-z_]\w*)\s*/\s*dt\s*=\s*(.*)$", re.DOTALL)
+
 
 class ASTNode:
     """Base class for AST nodes"""
@@ -107,6 +112,23 @@ class Ge(ASTNode):
 
     def __repr__(self):
         return "Ge(" + str(self.left) + ", " + str(self.right) + ")"
+
+
+class ODE(ASTNode):
+    """Ordinary differential equation node: d<var>/dt = <rhs>.
+
+    Represents a time derivative statement where ``var`` is the name of the
+    differentiated quantity (e.g. ``A_gut``) and ``rhs`` is the AST of the
+    right-hand side expression. This is the canonical form produced when
+    parsing perfusion-limited PBPK ODEs such as ``dA_gut/dt = -ka * A_gut``.
+    """
+
+    def __init__(self, var: str, rhs: ASTNode):
+        self.var = var
+        self.rhs = rhs
+
+    def __repr__(self):
+        return "ODE('" + self.var + "', " + str(self.rhs) + ")"
 
 
 class Forall(ASTNode):
@@ -438,6 +460,47 @@ def parse_equation(expression: str) -> Tuple[Optional[Any], Optional[List[str]]]
     return eq, free_vars
 
 
+def parse_ode(expression: str) -> Tuple[Optional[Any], Optional[List[str]]]:
+    """Parse an ordinary differential equation of the form ``d<var>/dt = <rhs>``.
+
+    Returns:
+        (ODE node, list of free variable names in the RHS) when the input
+        matches the ODE pattern, otherwise ``(None, None)``.
+
+    The differentiated variable name (e.g. ``A_gut``) is recorded verbatim as
+    ``ode.var``; the right-hand side is parsed into an AST suitable for Lean
+    translation via the standard expression parser.
+    """
+    if expression is None:
+        return None, None
+
+    normalized = expression.strip()
+    match = _ODE_RE.match(normalized)
+    if not match:
+        return None, None
+
+    var = match.group(1)
+    rhs_text = match.group(2).strip()
+
+    if not rhs_text:
+        return None, None
+
+    rhs_tokens = tokenize(rhs_text)
+    rhs_tokens = normalize_implicit_multiplication(rhs_tokens)
+    rhs, _ = parse_expression(rhs_tokens)
+
+    if rhs is None:
+        return None, None
+
+    free_vars = extract_free_variables(rhs)
+    return ODE(var, rhs), free_vars
+
+
+def is_ode(expression: str) -> bool:
+    """Return True if ``expression`` is an ODE of the form d<var>/dt = <rhs>."""
+    return _ODE_RE.match((expression or "").strip()) is not None
+
+
 def extract_free_variables(node) -> List[str]:
     """Extract free variable names from an AST node."""
     vars_set = set()
@@ -532,24 +595,26 @@ def parse(input_string: str) -> Dict[str, Any]:
     """Parse a mathematical statement and return structured information.
     
     Returns dict with:
-        - 'type': 'equation', 'inequality', or 'expression'
+        - 'type': 'equation', 'inequality', 'ode', or 'expression'
         - 'left': left side AST or None
         - 'right': right side AST or None
         - 'relation': relation operator or None
+        - 'ode': ODE node when the input is an ODE, else None
         - 'free_variables': list of free variable names
         - 'normalized': normalized expression string
     """
     eq, free_vars = parse_equation(input_string)
-    
+
     result = {
         'type': 'expression',
         'left': None,
         'right': None,
         'relation': None,
+        'ode': None,
         'free_variables': free_vars,
         'normalized': input_string.strip(),
     }
-    
+
     if eq is not None:
         result['left'] = eq.left
         result['right'] = eq.right
@@ -568,6 +633,14 @@ def parse(input_string: str) -> Dict[str, Any]:
                 result['type'] = 'inequality'
                 result['relation'] = op
                 break
+
+    # ODE detection takes precedence for d<var>/dt = <rhs> statements.
+    ode, ode_vars = parse_ode(input_string)
+    if ode is not None:
+        result['type'] = 'ode'
+        result['ode'] = ode
+        result['free_variables'] = ode_vars
+        result['relation'] = '='
     
     return result
 
@@ -601,6 +674,8 @@ def ast_to_latex(node) -> str:
         return f'{ast_to_latex(node.left)} > {ast_to_latex(node.right)}'
     if isinstance(node, Ge):
         return f'{ast_to_latex(node.left)} >= {ast_to_latex(node.right)}'
+    if isinstance(node, ODE):
+        return f'd{node.var}/dt = {ast_to_latex(node.rhs)}'
     return ''
 
 

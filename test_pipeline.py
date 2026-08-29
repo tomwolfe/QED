@@ -669,3 +669,111 @@ def test_statement_kind_eq_ne_distinct():
 
 def test_statement_kind_identity_power():
     assert statement_kind('x^1 = x^1') == 'identity'
+
+
+# --- ODE parsing tests (PBPK d<var>/dt = <rhs> support) ---
+
+from parser import parse_ode, is_ode, ODE, parse
+
+
+def test_parse_ode_basic():
+    ode, free_vars = parse_ode('dA_gut/dt = -ka * A_gut')
+    assert ode is not None
+    assert isinstance(ode, ODE)
+    assert ode.var == 'A_gut'
+    assert 'A_gut' in free_vars
+
+
+def test_parse_ode_var_extraction():
+    ode, free_vars = parse_ode('dA_liver/dt = Q * (C_p - C_liver / Kp)')
+    assert ode is not None
+    assert ode.var == 'A_liver'
+    # RHS free variables should be captured (Q, C_p, C_liver, Kp)
+    for v in ['Q', 'C_p', 'C_liver', 'Kp']:
+        assert v in free_vars
+
+
+def test_parse_ode_with_spaces():
+    ode, _ = parse_ode('dA_gut / dt = -ka * A_gut')
+    assert ode is not None
+    assert ode.var == 'A_gut'
+
+
+def test_parse_ode_rhs_is_ast():
+    from parser import BinOp, Neg, Var
+    ode, _ = parse_ode('dA_gut/dt = -ka * A_gut')
+    # RHS should be a BinOp (Neg(Var('k')) * Var('a')) * Var('A_gut')
+    assert isinstance(ode.rhs, BinOp)
+    assert ode.rhs.op == '*'
+
+
+def test_parse_ode_none_for_plain_equation():
+    ode, free_vars = parse_ode('x + 1 = 2')
+    assert ode is None
+    assert free_vars is None
+
+
+def test_parse_ode_none_for_expression():
+    ode, free_vars = parse_ode('x + 1')
+    assert ode is None
+    assert free_vars is None
+
+
+def test_is_ode_classification():
+    assert is_ode('dA_gut/dt = -ka * A_gut') is True
+    assert is_ode('x + 1 = 2') is False
+    assert is_ode('dA_central/dt = ka * A_gut') is True
+
+
+def test_parse_returns_ode_type():
+    result = parse('dA_gut/dt = -ka * A_gut')
+    assert result['type'] == 'ode'
+    assert result['ode'] is not None
+    assert result['ode'].var == 'A_gut'
+    assert result['relation'] == '='
+
+
+def test_parse_non_ode_untouched():
+    result = parse('x + 1 = 2')
+    assert result['type'] == 'equation'
+    assert result['ode'] is None
+
+
+def test_ast_to_latex_ode():
+    ode, _ = parse_ode('dA_gut/dt = -ka * A_gut')
+    rendered = ast_to_latex(ode)
+    assert rendered.startswith('dA_gut/dt =')
+    assert 'A_gut' in rendered
+
+
+def test_parse_ode_nonempty_rhs_required():
+    ode, _ = parse_ode('dA_gut/dt =')
+    assert ode is None
+
+
+# --- Additional parser unit tests for mutation coverage ---
+
+def test_parse_equation_single_var():
+    eq, free_vars = parse_equation('x = y')
+    assert eq is not None
+    assert set(free_vars) == {'x', 'y'}
+
+
+def test_parse_expression_addition():
+    from parser import BinOp
+    tokens = tokenize('a + b')
+    tokens = normalize_implicit_multiplication(tokens)
+    expr, _ = parse_expression(tokens)
+    assert isinstance(expr, BinOp)
+    assert expr.op == '+'
+
+
+def test_statement_kind_other_empty():
+    assert statement_kind('') == 'other'
+
+
+def test_contains_op_addition():
+    eq, _ = parse_equation('x + y = z')
+    assert contains_op(eq, '+') is True
+    assert contains_op(eq, '*') is False
+
