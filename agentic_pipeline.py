@@ -25,6 +25,7 @@ from parser import (
     statement_kind,
     is_ode,
     involves_derivative,
+    is_numeric_equality,
     BinOp,
     Var,
     Num,
@@ -290,6 +291,18 @@ class LeanAgenticPipeline:
             Ordered list of tactic candidates
         """
         candidates = []
+        
+        # Closed numeric equalities (no free variables, both sides are concrete
+        # integers): prefer ``simp``/``decide`` over ``rfl`` so the proof is
+        # genuinely non-reflexive.  ``rfl`` would still work (Lean's kernel can
+        # evaluate closed terms), but ``decide`` or ``simp`` is a stronger
+        # credibility signal for formal-verification gates.
+        if is_numeric_equality(expression):
+            candidates.extend(['simp', 'decide', 'norm_num', 'ring'])
+            for tactic in self.tactic_candidates:
+                if tactic not in candidates:
+                    candidates.append(tactic)
+            return candidates
         
         # Use statement_kind for identity short-circuit
         kind = statement_kind(expression)

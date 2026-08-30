@@ -1052,3 +1052,51 @@ def test_tactic_candidates_step_conservation():
     from agentic_pipeline import LeanAgenticPipeline
     cands = LeanAgenticPipeline().get_tactic_candidates(_VERITRIAL_STEP_CONSERVATION)
     assert "decide" in cands or "simp" in cands
+
+
+# ---------------------------------------------------------------------------
+# Phase C: is_numeric_equality and non-reflexive proof credibility
+# ---------------------------------------------------------------------------
+
+def test_is_numeric_equality_mass_conservation():
+    """The mass-conservation witness is a closed numeric equality."""
+    from parser import is_numeric_equality
+    assert is_numeric_equality("-6 + 9 + -13 + 4 + 6 + 0 = 0") is True
+
+
+def test_is_numeric_equality_perfusion_witness():
+    """The perfusion distributive witness is a closed numeric equality."""
+    from parser import is_numeric_equality
+    assert is_numeric_equality("3 * (5 - 4 / 2) = 3 * 5 - 3 * 4 / 2") is True
+
+
+def test_is_numeric_equality_identity():
+    """Closed numeric identity (129 = 129) is still a numeric equality."""
+    from parser import is_numeric_equality
+    assert is_numeric_equality("129 = 129") is True
+
+
+def test_is_numeric_equality_with_variables():
+    """An equality with free variables is NOT a numeric equality."""
+    from parser import is_numeric_equality
+    assert is_numeric_equality("ka * A_gut = ka * A_gut") is False
+    assert is_numeric_equality("x + 1 = 2") is False
+
+
+def test_is_numeric_equality_non_equation():
+    """A bare expression is not a numeric equality."""
+    from parser import is_numeric_equality
+    assert is_numeric_equality("42") is False
+    assert is_numeric_equality("x + y") is False
+
+
+def test_numeric_equality_uses_non_reflexive_tactic():
+    """Closed numeric equalities must prove by simp/decide (not rfl) for
+    formal-verification credibility."""
+    from agentic_pipeline import LeanAgenticPipeline
+    res = LeanAgenticPipeline(use_mathlib=True).run("-6 + 9 + -13 + 4 + 6 + 0 = 0")
+    assert res["success"] is True
+    assert "sorry" not in res["lean_code"]
+    # Must NOT be rfl: we want a genuine non-reflexive proof.
+    assert res["tactic"] != "rfl"
+    assert res["tactic"] in ("simp", "decide", "norm_num", "ring")

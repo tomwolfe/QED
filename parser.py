@@ -702,6 +702,34 @@ def _is_identity(node: Eq) -> bool:
     return ast_to_latex(node.left) == ast_to_latex(node.right)
 
 
+def _is_numeric_only(node: ASTNode) -> bool:
+    """Return True if the AST contains only numeric literals and operators (no variables)."""
+    if isinstance(node, Num):
+        return True
+    if isinstance(node, Neg):
+        return _is_numeric_only(node.expr)
+    if isinstance(node, BinOp):
+        return _is_numeric_only(node.left) and _is_numeric_only(node.right)
+    if isinstance(node, Var):
+        return False
+    return False
+
+
+def is_numeric_equality(latex: str) -> bool:
+    """Return True if the expression is a closed numeric equality (no free variables).
+
+    Both sides must reduce to concrete integers/floats so that ``decide``/``simp``
+    can prove the equality without assuming any variables. This is the class of
+    lemmas the PBPK bridge emits (e.g. ``-6 + 9 + -13 + 4 + 6 + 0 = 0``).
+    """
+    eq, free_vars = parse_equation(latex)
+    if eq is None or not isinstance(eq, Eq):
+        return False
+    if free_vars:
+        return False
+    return _is_numeric_only(eq.left) and _is_numeric_only(eq.right)
+
+
 def statement_kind(latex: str) -> str:
     """Classify a LaTeX statement as 'identity', 'equality', 'inequality', or 'other'.
 
