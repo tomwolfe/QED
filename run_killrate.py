@@ -8,12 +8,19 @@ Usage:
 """
 
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 # tether.tools is not a package; import the mutation harness by file path.
-_TOOLS_DIR = Path("/Users/tom/Documents/apps/tether/tools")
+# Resolved portably: $TETHER_DIR override, else a sibling `tether` of this
+# repo (co-located monorepo layout). No machine-specific absolute paths.
+_TETHER_DIR = Path(
+    os.environ.get("TETHER_DIR")
+    or str(Path(__file__).resolve().parent.parent / "tether")
+)
+_TOOLS_DIR = _TETHER_DIR / "tools"
 if str(_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_TOOLS_DIR))
 from mutation_killrate import measure, format_report  # noqa: E402
@@ -32,7 +39,7 @@ def short_runner(timeout: int):
     return run
 
 
-REPO_ROOT = Path("/Users/tom/Documents/apps")
+REPO_ROOT = Path(__file__).resolve().parent
 SUITES: list[str] = []
 
 

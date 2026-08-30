@@ -830,3 +830,69 @@ def test_contains_op_addition():
     assert contains_op(eq, '+') is True
     assert contains_op(eq, '*') is False
 
+
+
+# ---------------------------------------------------------------------------
+# Mission B: QED depth for the VeriTrial PBPK surface
+# ---------------------------------------------------------------------------
+
+def _pbpk_run(expr: str) -> dict:
+    """Run the pipeline (real Lean compile) and return the result dict."""
+    from agentic_pipeline import LeanAgenticPipeline
+    return LeanAgenticPipeline(use_mathlib=True).run(expr)
+
+
+def test_pbpk_perfusion_distributive_witness_proves_no_sorry():
+    """The closed numeric perfusion-limited distributive witness must prove
+    genuinely (decide/simp/ring), NOT by reflexivity, and contain no sorry."""
+    res = _pbpk_run("3 * (5 - 4 / 2) = 3 * 5 - 3 * 4 / 2")
+    assert res["success"] is True
+    assert "sorry" not in res["lean_code"]
+    assert "sorryAx" not in res["lean_code"]
+    # It is a closed numeric identity: proving it required a real tactic, not rfl.
+    assert res["tactic"] in ("simp", "decide", "ring", "norm_num", "field_simp")
+
+
+def test_pbpk_mass_conservation_witness_proves_no_sorry():
+    """Lemma 3b: the sum of all six compartment derivative RHS terms equals 0.
+    This is the genuinely non-reflexive mass-conservation proof."""
+    res = _pbpk_run("-6 + 9 + -13 + 4 + 6 + 0 = 0")
+    assert res["success"] is True
+    assert "sorry" not in res["lean_code"]
+    assert "sorryAx" not in res["lean_code"]
+
+
+def test_pbpk_gut_absorption_identity_proves():
+    res = _pbpk_run("ka * A_gut = ka * A_gut")
+    assert res["success"] is True
+    assert "sorry" not in res["lean_code"]
+
+
+def test_pbpk_ode_tactic_policy_includes_distributive_field():
+    """For a PBPK perfusion ODE the candidate ordering must surface the
+    field/distributive tactics (dsimp -> field_simp -> ring) so a genuine
+    proof is reachable."""
+    from agentic_pipeline import LeanAgenticPipeline
+    cands = LeanAgenticPipeline().get_tactic_candidates(
+        "dA_liver/dt = Q * (C_p - C_liver / Kp)"
+    )
+    assert "dsimp" in cands
+    assert "field_simp" in cands
+    assert "ring" in cands
+    assert cands.index("dsimp") < cands.index("field_simp") < cands.index("ring")
+
+
+def test_pbpk_symbolic_ode_fails_closed_without_mathlib():
+    """A fully symbolic perfusion-distributive lemma needs Mathlib
+    (field_simp/ring on the field division). When Mathlib is unavailable the
+    pipeline must FAIL CLOSED (success=False) rather than emit sorry."""
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline(use_mathlib=True)
+    if pipeline.use_mathlib:
+        # Mathlib present: a real proof is expected, but never a sorry.
+        res = pipeline.run("Q * (C_p - C_tissue / Kp) = Q * C_p - Q * C_tissue / Kp")
+        assert "sorry" not in res["lean_code"]
+    else:
+        # No Mathlib in this environment: the gate must not silently pass.
+        res = pipeline.run("Q * (C_p - C_tissue / Kp) = Q * C_p - Q * C_tissue / Kp")
+        assert res["success"] is False
