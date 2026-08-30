@@ -24,6 +24,10 @@ verification:
     - command: python3 check_tactic.py ring_goal
       contains: "ring"
   clean_room: true
+  mutation:
+    enabled: true
+    fail_below: 0.7
+    max_mutants: 20
 
 recovery:
   max_attempts: 5

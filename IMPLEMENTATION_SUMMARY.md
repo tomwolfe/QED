@@ -77,7 +77,7 @@ A CLI-based agentic pipeline that converts constrained mathematical statements (
     - _get_var_type considers expression context for variable typing
     - Proper type selection prevents Lean type mismatch errors
 
-### Test Results (88 tests passing)
+### Test Results (comprehensive unit tests passing)
 
 **Parser Hardening Tests** ✓
 - "2ab" normalized correctly to "2 * a * b" ✓
@@ -120,7 +120,7 @@ A CLI-based agentic pipeline that converts constrained mathematical statements (
 .
 ├── agentic_pipeline.py    # Main pipeline with intelligent tactic selection
 ├── parser.py              # Hardened recursive descent parser
-├── test_pipeline.py       # 88 comprehensive tests
+├── test_pipeline.py          # comprehensive unit tests
 ├── run_tests.py           # End-to-end test suite
 ├── check_sorry.py         # Helper script for sorry detection verification
 ├── check_parser.py        # Helper script for parser verification
@@ -189,7 +189,7 @@ The Lean 4 Agentic Pipeline has been hardened from an MVP to a more robust imple
 - Type inference produces context-appropriate types (Nat/Int/Rat) instead of defaulting to Int
 - Tactic selection uses parsed AST structure for smarter ordering (not keyword-based)
 - Sorry detection has been hardened with comprehensive patterns and fail-closed axiom verification
-- 88 unit tests verify all improvements
+- comprehensive unit tests verify all improvements
 - Pipeline gracefully handles missing Lean compiler
 - End-to-end integration verified with real Lean 4 compiler: 0=0, Nat.succ 0=1, x+0=x, -1+1=0 all verify without sorry
 - Mathlib auto-detection: falls back to core-only tactics when Mathlib is unavailable

@@ -896,3 +896,88 @@ def test_pbpk_symbolic_ode_fails_closed_without_mathlib():
         # No Mathlib in this environment: the gate must not silently pass.
         res = pipeline.run("Q * (C_p - C_tissue / Kp) = Q * C_p - Q * C_tissue / Kp")
         assert res["success"] is False
+
+
+# ---------------------------------------------------------------------------
+# Mission B (deepened): parser/statement_kind/tactic classification for the
+# EXACT lemma shapes VeriTrial's formal gate emits. These are fast unit tests
+# (no Lean compile) that pin the classification the agentic pipeline relies on
+# so a genuine proof path is always reachable and the gate never degrades to a
+# silent pass / reflexivity-only check.
+# ---------------------------------------------------------------------------
+
+# Closed numeric perfusion-distributive witness VeriTrial exports (Lemma 2).
+_VERITRIAL_NUMERIC_WITNESS = "3 * (5 - 4 / 2) = 3 * 5 - 3 * 4 / 2"
+# Symbolic perfusion-distributive law VeriTrial exports under --ode-lemmas
+# (requires Mathlib field_simp/ring; fail-closed without it).
+_VERITRIAL_SYMBOLIC_DISTRIBUTIVE = (
+    "Q * (C_p - C_tissue / Kp) = Q * C_p - Q * C_tissue / Kp"
+)
+
+
+def test_normalize_veritrial_numeric_witness_roundtrip():
+    """The exported numeric witness is already fully explicit; normalizing it
+    must leave the structure intact (no accidental identity collapse)."""
+    from parser import normalize_implicit_multiplication_expression
+    out = normalize_implicit_multiplication_expression(_VERITRIAL_NUMERIC_WITNESS)
+    assert out == _VERITRIAL_NUMERIC_WITNESS
+
+
+def test_parse_veritrial_numeric_witness_no_free_vars():
+    """A closed numeric witness has no free variables: QED proves it by decide/
+    simp on concrete numerals, never by assuming away a variable."""
+    eq, free_vars = parse_equation(_VERITRIAL_NUMERIC_WITNESS)
+    assert eq is not None
+    assert free_vars == []
+
+
+def test_statement_kind_veritrial_numeric_witness_is_equality_not_identity():
+    """Crucial: the numeric witness must classify as 'equality' (both sides
+    structurally differ), so the pipeline takes the real proof branch instead
+    of the reflexivity short-circuit. A regression here would mean the gate
+    silently 'passes' a lemma it never actually discharged."""
+    assert statement_kind(_VERITRIAL_NUMERIC_WITNESS) == 'equality'
+    assert statement_kind(_VERITRIAL_NUMERIC_WITNESS) != 'identity'
+
+
+def test_statement_kind_veritrial_symbolic_distributive_is_equality():
+    eq, free_vars = parse_equation(_VERITRIAL_SYMBOLIC_DISTRIBUTIVE)
+    assert eq is not None
+    assert set(free_vars) == {"Q", "C_p", "C_tissue", "Kp"}
+    assert statement_kind(_VERITRIAL_SYMBOLIC_DISTRIBUTIVE) == 'equality'
+
+
+def test_tactic_candidates_veritrial_numeric_reach_real_proof():
+    """For the closed numeric witness a genuine (non-rfl) proof path must be
+    reachable in bare Lean: field_simp/ring/norm_num/simp/decide are all
+    surfaced so decide/simp can discharge it without Mathlib."""
+    from agentic_pipeline import LeanAgenticPipeline
+    cands = LeanAgenticPipeline().get_tactic_candidates(_VERITRIAL_NUMERIC_WITNESS)
+    assert "simp" in cands
+    assert "decide" in cands
+    # Must NOT be reduced to the identity short-circuit (rfl-first).
+    assert cands[0] != "rfl"
+
+
+def test_tactic_candidates_veritrial_symbolic_field_path():
+    """For the symbolic distributive law the Mathlib field/distributive
+    tactics must be surfaced first so a genuine proof is reachable when
+    Mathlib is present; without Mathlib the pipeline correctly fails closed
+    (see test_pbpk_symbolic_ode_fails_closed_without_mathlib)."""
+    from agentic_pipeline import LeanAgenticPipeline
+    cands = LeanAgenticPipeline().get_tactic_candidates(
+        _VERITRIAL_SYMBOLIC_DISTRIBUTIVE)
+    assert "field_simp" in cands
+    assert "ring" in cands
+    assert cands.index("field_simp") < cands.index("ring")
+
+
+def test_get_tactic_candidates_symbolic_orders_mathlib_before_generic():
+    """Symbolic field identities must not be handed to a generic 'simp' before
+    the field-clearing tactics get a chance; otherwise a Mathlib-backed run
+    would close the goal without exercising field_simp/ring."""
+    from agentic_pipeline import LeanAgenticPipeline
+    cands = LeanAgenticPipeline().get_tactic_candidates(
+        _VERITRIAL_SYMBOLIC_DISTRIBUTIVE)
+    assert cands.index("field_simp") < cands.index("simp")
+    assert cands.index("ring") < cands.index("simp")
