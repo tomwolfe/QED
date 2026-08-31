@@ -607,6 +607,31 @@ def has_polynomial_structure(node) -> bool:
     return False
 
 
+def has_rational_structure(node) -> bool:
+    """Detect division over symbolic (non-numeric) variables.
+
+    Returns True when the AST contains a ``/`` operator whose right operand
+    is *not* a pure numeric literal – i.e. the division is symbolic and
+    therefore lives in a field (``ℝ``) rather than ``ℕ`` or ``ℤ``.
+
+    This is used by the agentic pipeline to decide whether the expression
+    requires ``Real`` typing and Mathlib's ``field_simp``/``ring`` tactics.
+    """
+    if node is None:
+        return False
+    if isinstance(node, BinOp):
+        if node.op == '/':
+            # Right operand that is not a numeric literal => symbolic division
+            if not isinstance(node.right, Num):
+                return True
+        return has_rational_structure(node.left) or has_rational_structure(node.right)
+    if isinstance(node, Neg):
+        return has_rational_structure(node.expr)
+    if isinstance(node, (Eq, Ne, Lt, Le, Gt, Ge)):
+        return has_rational_structure(node.left) or has_rational_structure(node.right)
+    return False
+
+
 def parse(input_string: str) -> Dict[str, Any]:
     """Parse a mathematical statement and return structured information.
     

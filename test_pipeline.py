@@ -1100,3 +1100,127 @@ def test_numeric_equality_uses_non_reflexive_tactic():
     # Must NOT be rfl: we want a genuine non-reflexive proof.
     assert res["tactic"] != "rfl"
     assert res["tactic"] in ("simp", "decide", "norm_num", "ring")
+
+
+# ---------------------------------------------------------------------------
+# Stage 1: Symbolic Real Analysis – has_rational_structure, Real typing,
+#           and [Field ℝ] code generation
+# ---------------------------------------------------------------------------
+
+from parser import has_rational_structure
+
+
+def test_has_rational_structure_symbolic_division():
+    """Division by a symbolic variable => rational structure."""
+    eq, _ = parse_equation("Q * (C_p - C_tissue / Kp) = Q * C_p - Q * C_tissue / Kp")
+    assert has_rational_structure(eq) is True
+
+
+def test_has_rational_structure_numeric_only_division():
+    """Division by a numeric literal is NOT rational structure (stays ℤ/ℕ)."""
+    eq, _ = parse_equation("4 / 2 = 2")
+    assert has_rational_structure(eq) is False
+
+
+def test_has_rational_structure_no_division():
+    """Expressions without / have no rational structure."""
+    eq, _ = parse_equation("a + b = b + a")
+    assert has_rational_structure(eq) is False
+
+
+def test_has_rational_structure_none():
+    assert has_rational_structure(None) is False
+
+
+def test_suggest_type_real_for_symbolic_division():
+    """Symbolic division (C_tissue / Kp) should infer Real, not Rat."""
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline()
+    assert pipeline._suggest_type(
+        "Q * (C_p - C_tissue / Kp) = Q * C_p - Q * C_tissue / Kp"
+    ) == "Real"
+
+
+def test_suggest_type_real_for_ode():
+    """ODE expressions always infer Real."""
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline()
+    assert pipeline._suggest_type("dA_liver/dt = Q * (C_p - C_liver / Kp)") == "Real"
+
+
+def test_generate_lean_code_real_field_r():
+    """Real-typed theorems should emit [Field ℝ] and ℝ variable annotations."""
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline(use_mathlib=True)
+    code = pipeline.generate_lean_code(
+        "Q * (C_p - C_tissue / Kp) = Q * C_p - Q * C_tissue / Kp",
+        ["Q", "C_p", "C_tissue", "Kp"],
+    )
+    assert "[Field ℝ]" in code
+    assert "ℝ" in code
+    assert "import Mathlib" in code
+
+
+def test_tactic_candidates_symbolic_rational_prioritizes_field():
+    """Symbolic rational expressions must surface intro/dsimp/field_simp/ring
+    before generic simp."""
+    from agentic_pipeline import LeanAgenticPipeline
+    cands = LeanAgenticPipeline().get_tactic_candidates(
+        "Q * (C_p - C_tissue / Kp) = Q * C_p - Q * C_tissue / Kp"
+    )
+    assert "intro" in cands
+    assert "dsimp" in cands
+    assert "field_simp" in cands
+    assert "ring" in cands
+    assert cands.index("field_simp") < cands.index("ring")
+    assert cands.index("ring") < cands.index("simp")
+
+
+def test_symbolic_distributive_proves_no_sorry():
+    """The symbolic perfusion-distributive law must prove (Mathlib-backed)
+    without sorry.  This is the core Stage 1 gate for parametric ODE algebra.
+    When Mathlib is unavailable the pipeline must FAIL CLOSED (success=False)."""
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline(use_mathlib=True)
+    if pipeline.use_mathlib:
+        res = pipeline.run(
+            "Q * (C_p - C_tissue / Kp) = Q * C_p - Q * C_tissue / Kp"
+        )
+        assert res["success"] is True
+        assert "sorry" not in res["lean_code"]
+        assert "sorryAx" not in res["lean_code"]
+        assert res["verification"]["axioms_check"] == "passed"
+    else:
+        # No Mathlib: must fail closed, not emit sorry
+        res = pipeline.run(
+            "Q * (C_p - C_tissue / Kp) = Q * C_p - Q * C_tissue / Kp"
+        )
+        assert res["success"] is False
+        assert "sorry" not in res.get("lean_code", "")
+
+
+def test_symbolic_mass_balance_real_typed():
+    """A symbolic mass-balance expression with subtraction and division
+    must be typed as Real and generate valid Lean with [Field ℝ]."""
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline(use_mathlib=True)
+    # Mass-balance: sum of perfusion rates equals zero (symbolic)
+    expr = "Q * C_p - Q * C_tissue / Kp + Q * C_liver / Kp = 0"
+    code = pipeline.generate_lean_code(expr, ["Q", "C_p", "C_tissue", "Kp", "C_liver"])
+    assert "[Field ℝ]" in code
+    assert "ℝ" in code
+    # Must not contain sorry
+    assert "sorry" not in code
+
+
+def test_symbolic_distributive_lean_code_no_sorry():
+    """The generated Lean source for the symbolic distributive law must not
+    contain sorry even before compilation."""
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline(use_mathlib=True)
+    code = pipeline.generate_lean_code(
+        "Q * (C_p - C_tissue / Kp) = Q * C_p - Q * C_tissue / Kp",
+        ["Q", "C_p", "C_tissue", "Kp"],
+    )
+    assert "sorry" not in code
+    assert "sorryAx" not in code

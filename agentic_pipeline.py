@@ -22,6 +22,7 @@ from parser import (
     is_inequality,
     has_numeric_ops,
     has_polynomial_structure,
+    has_rational_structure,
     statement_kind,
     is_ode,
     involves_derivative,
@@ -59,7 +60,7 @@ class LeanAgenticPipeline:
         self.use_mathlib = use_mathlib and self._check_mathlib_available()
         self.tactic_candidates = [
             'rfl', 'simp', 'norm_num', 'decide', 'ring', 
-            'linarith', 'omega', 'field_simp', 'dsimp'
+            'linarith', 'omega', 'field_simp', 'dsimp', 'intro'
         ]
     
     def _find_lean(self) -> Optional[str]:
@@ -153,10 +154,28 @@ class LeanAgenticPipeline:
         Suggest appropriate type based on expression content.
         
         Returns:
-            Type string: 'Nat', 'Int', or 'Rat'
+            Type string: 'Nat', 'Int', 'Rat', or 'Real'
         """
-        # Check for division -> Rat
+        # ODE expressions and rate-of-change notation live on ℝ
+        if is_ode(expression) or involves_derivative(expression):
+            return 'Real'
+
+        # Symbolic division (division where the divisor is not a pure numeric
+        # literal) requires a field – Real / Rat.  We prefer 'Real' when the
+        # expression also contains subtraction or continuous variables, but
+        # even pure symbolic division is a field operation, so map to 'Real'
+        # whenever the AST confirms rational structure.
         if '/' in expression:
+            eq, _ = parse_equation(expression)
+            node = eq if eq is not None else None
+            if node is None:
+                # Fallback: parse as bare expression
+                tokens = tokenize(expression)
+                tokens = normalize_implicit_multiplication(tokens)
+                node, _ = parse_expression(tokens)
+            if node is not None and has_rational_structure(node):
+                return 'Real'
+            # Plain numeric division (e.g. 4/2) stays Rat
             return 'Rat'
         
         # Check for negative numbers or subtraction -> Int
@@ -338,6 +357,20 @@ class LeanAgenticPipeline:
             tokens = normalize_implicit_multiplication(tokens)
             ast_node, _ = parse_expression(tokens)
         
+        # Symbolic Real / rational expressions: division over symbolic
+        # variables lives in a field ℝ.  Prioritize the Mathlib field
+        # algebra stack (dsimp to normalize, field_simp to clear divisions,
+        # ring to close polynomial/field identities).  ``intro`` is placed
+        # AFTER the field tactics because when variables are already in the
+        # theorem signature (as parameters), intro has nothing to do.
+        if has_rational_structure(ast_node):
+            candidates.extend(['dsimp', 'field_simp', 'ring', 'linarith',
+                               'intro', 'simp', 'norm_num'])
+            for tactic in self.tactic_candidates:
+                if tactic not in candidates:
+                    candidates.append(tactic)
+            return candidates
+        
         # Classify using AST helpers
         if contains_op(ast_node, '/'):
             candidates.extend(['field_simp', 'ring', 'norm_num', 'simp'])
@@ -428,31 +461,40 @@ class LeanAgenticPipeline:
         lean_keywords = {'Nat', 'Int', 'Rat', 'Real', 'Bool', 'True', 'False', 'Nat.succ', 'Nat.zero'}
         filtered_vars = [v for v in free_vars if v not in lean_keywords and not v.startswith('Nat.')]
         
-        # Build theorem statement
-        if filtered_vars:
-            params = ' '.join([f'({v} : {var_type})' for v in filtered_vars])
-            theorem = f"theorem qed_goal {params} : {expression} := by\n"
+        # Build imports and theorem header
+        if var_type == 'Real':
+            # Real-typed theorems live in a field; emit [Field ℝ] instance
+            imports = "import Mathlib.Tactic\nimport Mathlib.Data.Real.Basic\n\n"
+            if filtered_vars:
+                params = ' '.join([f'({v} : ℝ)' for v in filtered_vars])
+                theorem = f"theorem qed_goal [Field ℝ] {params} : {expression} := by\n"
+            else:
+                theorem = f"theorem qed_goal [Field ℝ] : {expression} := by\n"
         else:
-            # Add type annotation for negative numbers or division
-            if var_type in ('Int', 'Rat'):
-                # Annotate the expression with the appropriate type
-                if '-' in expression and var_type == 'Int':
-                    # For negative numbers, add type annotation only to negative literals
-                    annotated_expr = re.sub(r'(-\d+)', r'(\1 : Int)', expression)
-                    theorem = f"theorem qed_goal : {annotated_expr} := by\n"
-                elif '/' in expression and var_type == 'Rat':
-                    # For division, add type annotation
-                    theorem = f"theorem qed_goal : {expression} := by\n"
+            # Build theorem statement
+            if filtered_vars:
+                params = ' '.join([f'({v} : {var_type})' for v in filtered_vars])
+                theorem = f"theorem qed_goal {params} : {expression} := by\n"
+            else:
+                # Add type annotation for negative numbers or division
+                if var_type in ('Int', 'Rat'):
+                    # Annotate the expression with the appropriate type
+                    if '-' in expression and var_type == 'Int':
+                        # For negative numbers, add type annotation only to negative literals
+                        annotated_expr = re.sub(r'(-\d+)', r'(\1 : Int)', expression)
+                        theorem = f"theorem qed_goal : {annotated_expr} := by\n"
+                    elif '/' in expression and var_type == 'Rat':
+                        # For division, add type annotation
+                        theorem = f"theorem qed_goal : {expression} := by\n"
+                    else:
+                        theorem = f"theorem qed_goal : {expression} := by\n"
                 else:
                     theorem = f"theorem qed_goal : {expression} := by\n"
-            else:
-                theorem = f"theorem qed_goal : {expression} := by\n"
-        
-        # Add imports if using Mathlib
-        if self.use_mathlib:
-            imports = "import Mathlib.Tactic\n\n"
-        else:
             imports = ""
+        
+        # Add imports if using Mathlib (non-Real types)
+        if self.use_mathlib and var_type != 'Real':
+            imports = "import Mathlib.Tactic\n\n"
         
         return imports + theorem
     
