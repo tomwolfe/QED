@@ -23,6 +23,7 @@ from parser import (
     has_numeric_ops,
     has_polynomial_structure,
     has_rational_structure,
+    find_division_variables,
     statement_kind,
     is_ode,
     involves_derivative,
@@ -358,14 +359,14 @@ class LeanAgenticPipeline:
             ast_node, _ = parse_expression(tokens)
         
         # Symbolic Real / rational expressions: division over symbolic
-        # variables lives in a field ℝ.  Prioritize the Mathlib field
-        # algebra stack (dsimp to normalize, field_simp to clear divisions,
-        # ring to close polynomial/field identities).  ``intro`` is placed
-        # AFTER the field tactics because when variables are already in the
-        # theorem signature (as parameters), intro has nothing to do.
+        # variables lives in a field ℝ.  Prioritize ``intro`` first (to
+        # bring universally quantified variables into scope), then the
+        # Mathlib field algebra stack (dsimp to normalize, field_simp to
+        # clear divisions, ring to close polynomial/field identities),
+        # followed by linarith for any linear side-conditions.
         if has_rational_structure(ast_node):
-            candidates.extend(['dsimp', 'field_simp', 'ring', 'linarith',
-                               'intro', 'simp', 'norm_num'])
+            candidates.extend(['intro', 'dsimp', 'field_simp', 'ring',
+                               'linarith', 'simp', 'norm_num'])
             for tactic in self.tactic_candidates:
                 if tactic not in candidates:
                     candidates.append(tactic)
@@ -465,9 +466,24 @@ class LeanAgenticPipeline:
         if var_type == 'Real':
             # Real-typed theorems live in a field; emit [Field ℝ] instance
             imports = "import Mathlib.Tactic\nimport Mathlib.Data.Real.Basic\n\n"
+
+            # For parametric field identities (free vars + symbolic division),
+            # emit universal quantification with positivity hypotheses for
+            # variables that appear in division denominators.
+            eq_node, _ = parse_equation(expression)
+            div_vars = find_division_variables(eq_node) if eq_node else set()
+            hyp_vars = sorted(div_vars & set(filtered_vars)) if div_vars else []
+
             if filtered_vars:
                 params = ' '.join([f'({v} : ℝ)' for v in filtered_vars])
-                theorem = f"theorem qed_goal [Field ℝ] {params} : {expression} := by\n"
+                if hyp_vars:
+                    hyps = ' '.join([f'(h{v} : 0 < {v})' for v in hyp_vars])
+                    theorem = (
+                        f"theorem qed_goal [Field ℝ] {params} {hyps} "
+                        f": {expression} := by\n"
+                    )
+                else:
+                    theorem = f"theorem qed_goal [Field ℝ] {params} : {expression} := by\n"
             else:
                 theorem = f"theorem qed_goal [Field ℝ] : {expression} := by\n"
         else:

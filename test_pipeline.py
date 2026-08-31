@@ -1224,3 +1224,138 @@ def test_symbolic_distributive_lean_code_no_sorry():
     )
     assert "sorry" not in code
     assert "sorryAx" not in code
+
+
+# ---------------------------------------------------------------------------
+# Phase 1: Parametric Linear Compartmental & Field Expansion
+# ---------------------------------------------------------------------------
+
+from parser import find_division_variables, parse_equation
+
+
+def test_find_division_variables_symbolic():
+    """Variables in symbolic division denominators are detected."""
+    eq, _ = parse_equation("Q * (C_p - C_tissue / Kp) = Q * C_p - Q * C_tissue / Kp")
+    div_vars = find_division_variables(eq)
+    assert "Kp" in div_vars
+    assert "C_p" not in div_vars
+    assert "Q" not in div_vars
+
+
+def test_find_division_variables_multiple():
+    """Multiple division positions are detected."""
+    eq, _ = parse_equation("a / b + c / d = e")
+    div_vars = find_division_variables(eq)
+    assert div_vars == {"b", "d"}
+
+
+def test_find_division_variables_numeric_only():
+    """Numeric-only division yields no division variables."""
+    eq, _ = parse_equation("4 / 2 = 2")
+    div_vars = find_division_variables(eq)
+    assert div_vars == set()
+
+
+def test_find_division_variables_none():
+    assert find_division_variables(None) == set()
+
+
+def test_parametric_lean_code_haspositivity_hypotheses():
+    """Parametric expressions with symbolic division emit positivity hypotheses
+    for variables in division positions."""
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline(use_mathlib=True)
+    code = pipeline.generate_lean_code(
+        "Q * (C_p - C_tissue / Kp) = Q * C_p - Q * C_tissue / Kp",
+        ["Q", "C_p", "C_tissue", "Kp"],
+    )
+    assert "[Field ℝ]" in code
+    assert "(hKp : 0 < Kp)" in code
+    assert "sorry" not in code
+
+
+def test_parametric_lean_code_no_hyp_for_non_div_vars():
+    """Variables NOT in division positions do not get positivity hypotheses."""
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline(use_mathlib=True)
+    code = pipeline.generate_lean_code(
+        "Q * (C_p - C_tissue / Kp) = Q * C_p - Q * C_tissue / Kp",
+        ["Q", "C_p", "C_tissue", "Kp"],
+    )
+    assert "(hQ" not in code
+    assert "(hC_p" not in code
+    assert "(hC_tissue" not in code
+
+
+def test_parametric_lean_code_no_div_no_hyps():
+    """Expressions without division emit no positivity hypotheses."""
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline(use_mathlib=True)
+    code = pipeline.generate_lean_code(
+        "a + b = b + a",
+        ["a", "b"],
+    )
+    assert "0 <" not in code
+
+
+def test_parametric_mass_balance_with_hypotheses():
+    """The parametric mass conservation sum emits hypotheses for division vars."""
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline(use_mathlib=True)
+    expr = "-ka * Ag + Q * (Cp - Ct / Kp) + CL * Cp - Q * (Cp - Ct / Kp) - CL * Cp = 0"
+    code = pipeline.generate_lean_code(expr, ["ka", "Ag", "Q", "Cp", "Ct", "Kp", "CL"])
+    assert "[Field ℝ]" in code
+    assert "(hKp : 0 < Kp)" in code
+    assert "sorry" not in code
+
+
+def test_tactic_candidates_parametric_orders_intro_first():
+    """Parametric field identities must have intro first to bind universally
+    quantified variables before field_simp/ring tactics."""
+    from agentic_pipeline import LeanAgenticPipeline
+    cands = LeanAgenticPipeline().get_tactic_candidates(
+        "Q * (C_p - C_tissue / Kp) = Q * C_p - Q * C_tissue / Kp"
+    )
+    assert cands[0] == "intro"
+    idx_intro = cands.index("intro")
+    idx_ds = cands.index("dsimp")
+    idx_fs = cands.index("field_simp")
+    idx_ring = cands.index("ring")
+    idx_lin = cands.index("linarith")
+    assert idx_intro < idx_ds < idx_fs < idx_ring < idx_lin
+
+
+def test_parametric_distributive_proves_no_sorry():
+    """The parametric distributive law must prove (Mathlib-backed) without sorry
+    when Mathlib is available, and fail closed when it is not."""
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline(use_mathlib=True)
+    res = pipeline.run(
+        "Q * (C_p - C_tissue / Kp) = Q * C_p - Q * C_tissue / Kp"
+    )
+    if pipeline.use_mathlib:
+        assert res["success"] is True
+        assert "sorry" not in res["lean_code"]
+        assert "sorryAx" not in res["lean_code"]
+    else:
+        assert res["success"] is False
+        assert "sorry" not in res.get("lean_code", "")
+
+
+def test_parametric_mass_conservation_proves_no_sorry():
+    """Parametric mass conservation identity (sum of derivatives = 0) must prove
+    without sorry when Mathlib is available."""
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline(use_mathlib=True)
+    expr = (
+        "-ka * Ag + Q * (Cp - Ct / Kp) + CL * Cp "
+        "- Q * (Cp - Ct / Kp) - CL * Cp = 0"
+    )
+    res = pipeline.run(expr)
+    if pipeline.use_mathlib:
+        assert res["success"] is True
+        assert "sorry" not in res["lean_code"]
+        assert "sorryAx" not in res["lean_code"]
+    else:
+        assert res["success"] is False
+        assert "sorry" not in res.get("lean_code", "")

@@ -607,6 +607,42 @@ def has_polynomial_structure(node) -> bool:
     return False
 
 
+def find_division_variables(node) -> set:
+    """Find variable names that appear in division denominators.
+
+    Returns the set of variable names whose right-hand side of a ``/`` node
+    is not a numeric literal (i.e. symbolic division).  Used by the agentic
+    pipeline to generate positivity hypotheses for field-theoretic theorems.
+    """
+    if node is None:
+        return set()
+    result: set = set()
+    if isinstance(node, BinOp):
+        if node.op == '/' and not isinstance(node.right, Num):
+            _collect_vars(node.right, result)
+        result |= find_division_variables(node.left)
+        result |= find_division_variables(node.right)
+    elif isinstance(node, Neg):
+        result |= find_division_variables(node.expr)
+    elif isinstance(node, (Eq, Ne, Lt, Le, Gt, Ge)):
+        result |= find_division_variables(node.left)
+        result |= find_division_variables(node.right)
+    return result
+
+
+def _collect_vars(node, result: set) -> None:
+    """Collect all Var names from an AST node into *result*."""
+    if node is None:
+        return
+    if isinstance(node, Var):
+        result.add(node.name)
+    elif isinstance(node, BinOp):
+        _collect_vars(node.left, result)
+        _collect_vars(node.right, result)
+    elif isinstance(node, Neg):
+        _collect_vars(node.expr, result)
+
+
 def has_rational_structure(node) -> bool:
     """Detect division over symbolic (non-numeric) variables.
 
