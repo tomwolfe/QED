@@ -1361,3 +1361,33 @@ def test_parametric_mass_conservation_proves_no_sorry():
     else:
         assert res["success"] is False
         assert "sorry" not in res.get("lean_code", "")
+
+
+def test_parametric_compartmental_conservation():
+    """4-compartment flow conservation with positivity hypotheses."""
+    res = _pbpk_run(
+        "(-ka * Ag) + (Q1 * (Cp - Ct1 / Kp1)) + (Q2 * (Cp - Ct2 / Kp2)) "
+        "+ (ka * Ag - Q1 * (Cp - Ct1 / Kp1) - Q2 * (Cp - Ct2 / Kp2)) = 0"
+    )
+    assert res["success"] is True
+    assert "sorry" not in res["lean_code"]
+    assert res["verification"]["axioms_check"] == "passed"
+
+
+def test_has_compartmental_structure():
+    """detects Q * (C_p - C_tissue / Kp) patterns"""
+    from parser import has_compartmental_structure, parse_equation
+    eq, _ = parse_equation("Q * (C_p - C_tissue / Kp) = Q * C_p - Q * C_tissue / Kp")
+    assert has_compartmental_structure(eq) is True
+
+
+def test_has_compartmental_structure_no_match():
+    """expressions without the compartment pattern return False"""
+    from parser import has_compartmental_structure, parse_equation
+    eq, _ = parse_equation("a + b = b + a")
+    assert has_compartmental_structure(eq) is False
+
+
+def test_has_compartmental_structure_none():
+    from parser import has_compartmental_structure
+    assert has_compartmental_structure(None) is False

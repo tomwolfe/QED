@@ -706,6 +706,44 @@ def extract_positivity_hypotheses(node) -> List[str]:
     return [f"(h{v} : 0 < {v})" for v in sorted(div_vars)]
 
 
+def has_compartmental_structure(node) -> bool:
+    """Detect PBPK compartmental flow patterns in the AST.
+
+    Returns True when the expression contains the characteristic perfusion-
+    limited compartment structure ``Q * (C_p - C_tissue / Kp)`` where a
+    flow rate ``Q`` multiplies a concentration gradient involving division
+    by a tissue partition coefficient ``Kp``.
+
+    This is used by the agentic pipeline to classify VeriTrial PBPK
+    mass-conservation lemmas and route them through the Real-typed
+    parametric proof path.
+    """
+    if node is None:
+        return False
+
+    def _walk(n):
+        if n is None:
+            return False
+        if isinstance(n, BinOp) and n.op == '*':
+            # Pattern: Q * (C_p - C_tissue / Kp) — the right child is
+            # a subtraction whose right operand is a division.
+            rhs = n.right
+            if isinstance(rhs, BinOp) and rhs.op in ('-', '+'):
+                if isinstance(rhs.right, BinOp) and rhs.right.op == '/':
+                    # Check the denominator is symbolic (not numeric)
+                    if not isinstance(rhs.right.right, Num):
+                        return True
+        if isinstance(n, BinOp):
+            return _walk(n.left) or _walk(n.right)
+        if isinstance(n, Neg):
+            return _walk(n.expr)
+        if isinstance(n, (Eq, Ne, Lt, Le, Gt, Ge)):
+            return _walk(n.left) or _walk(n.right)
+        return False
+
+    return _walk(node)
+
+
 def parse(input_string: str) -> Dict[str, Any]:
     """Parse a mathematical statement and return structured information.
     
