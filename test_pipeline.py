@@ -1302,7 +1302,7 @@ def test_parametric_mass_balance_with_hypotheses():
     """The parametric mass conservation sum emits hypotheses for division vars."""
     from agentic_pipeline import LeanAgenticPipeline
     pipeline = LeanAgenticPipeline(use_mathlib=True)
-    expr = "-ka * Ag + Q * (Cp - Ct / Kp) + CL * Cp - Q * (Cp - Ct / Kp) - CL * Cp = 0"
+    expr = "-ka * Ag + Q * (Cp - Ct / Kp) + ka * Ag - Q * (Cp - Ct / Kp) - CL * Cp + CL * Cp = 0"
     code = pipeline.generate_lean_code(expr, ["ka", "Ag", "Q", "Cp", "Ct", "Kp", "CL"])
     assert "[Field ℝ]" in code
     assert "(hKp : 0 < Kp)" in code
@@ -1347,9 +1347,11 @@ def test_parametric_mass_conservation_proves_no_sorry():
     without sorry when Mathlib is available."""
     from agentic_pipeline import LeanAgenticPipeline
     pipeline = LeanAgenticPipeline(use_mathlib=True)
+    # Correct mass conservation: Gut(-ka*Ag) + Liver(Q*(Cp-Ct/Kp)) +
+    # Central(ka*Ag - Q*(Cp-Ct/Kp) - CL*Cp) + Elim(CL*Cp) = 0
     expr = (
-        "-ka * Ag + Q * (Cp - Ct / Kp) + CL * Cp "
-        "- Q * (Cp - Ct / Kp) - CL * Cp = 0"
+        "-ka * Ag + Q * (Cp - Ct / Kp) + ka * Ag "
+        "- Q * (Cp - Ct / Kp) - CL * Cp + CL * Cp = 0"
     )
     res = pipeline.run(expr)
     if pipeline.use_mathlib:

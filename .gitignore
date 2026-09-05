@@ -10,3 +10,5 @@ output.lean
 *.egg-info/
 .venv/
 venv/
+.lake/
+lake-packages/

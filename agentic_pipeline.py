@@ -58,6 +58,9 @@ class LeanAgenticPipeline:
             lean_path: Path to lean executable (or None to search PATH)
         """
         self.lean_path = lean_path or self._find_lean()
+        # Detect Lake environment for hermetic Mathlib builds
+        self._lake_root = self._find_lake_root()
+        self._lake_env_lean = self._build_lake_env_lean_cmd()
         # Auto-detect Mathlib availability
         self.use_mathlib = use_mathlib and self._check_mathlib_available()
         self.tactic_candidates = [
@@ -93,6 +96,40 @@ class LeanAgenticPipeline:
             pass
         return None
     
+    def _find_lake_root(self) -> Optional[Path]:
+        """Walk up from CWD to find a directory containing lakefile.lean."""
+        d = Path.cwd()
+        while d != d.parent:
+            if (d / "lakefile.lean").exists():
+                return d
+            d = d.parent
+        if (d / "lakefile.lean").exists():
+            return d
+        return None
+    
+    def _build_lake_env_lean_cmd(self) -> Optional[List[str]]:
+        """If a Lake root is detected, return the command prefix for
+        ``lake env lean <file>`` so Lean resolves Mathlib imports."""
+        if self._lake_root is None:
+            return None
+        elan_bin = str(Path.home() / ".elan" / "bin")
+        lake_bin = os.path.join(elan_bin, "lake")
+        if not os.path.isfile(lake_bin):
+            return None
+        return [lake_bin, "env", "lean"]
+    
+    def _compile_lean_cmd(self, lean_file: str) -> List[str]:
+        """Return the full command list to compile *lean_file*.
+        
+        When a Lake root with ``lakefile.lean`` is detected, use
+        ``lake env lean <file>`` so that Mathlib imports resolve
+        through the hermetic Lake build graph.  Otherwise fall back
+        to the bare ``lean`` executable.
+        """
+        if self._lake_env_lean is not None:
+            return self._lake_env_lean + [lean_file]
+        return [self.lean_path or 'lean', lean_file]
+    
     def _check_mathlib_available(self) -> bool:
         """Check if Mathlib is available in the Lean environment."""
         if not self.lean_path:
@@ -108,12 +145,16 @@ class LeanAgenticPipeline:
                 f.write("import Mathlib.Tactic\n")
                 temp_path = f.name
             
+            # Prefer `lake env lean` when a lakefile is present, so Mathlib
+            # imports resolve through the hermetic Lake build graph.
+            compile_cmd = self._compile_lean_cmd(temp_path)
+            
             try:
                 result = subprocess.run(
-                    [self.lean_path, temp_path],
+                    compile_cmd,
                     capture_output=True,
                     text=True,
-                    timeout=30,
+                    timeout=60,
                     env=env
                 )
                 return result.returncode == 0
@@ -271,7 +312,7 @@ class LeanAgenticPipeline:
                 f.write(verify_code)
             
             result = subprocess.run(
-                [self.lean_path or 'lean', verify_path],
+                self._compile_lean_cmd(verify_path),
                 capture_output=True,
                 text=True,
                 timeout=30,
@@ -365,9 +406,12 @@ class LeanAgenticPipeline:
         # Mathlib field algebra stack (dsimp to normalize, field_simp to
         # clear divisions, ring_nf to close polynomial/field identities),
         # followed by linarith for any linear side-conditions.
+        # ``simp [mul_sub, mul_div_assoc]`` handles the canonical
+        # distributive-over-division identity that field_simp alone cannot.
         if has_rational_structure(ast_node):
-            candidates.extend(['intro', 'dsimp', 'field_simp', 'ring_nf',
-                               'linarith', 'simp', 'norm_num'])
+            candidates.extend(['intro', 'dsimp', 'field_simp',
+                               'simp [mul_sub, mul_div_assoc]',
+                               'ring_nf', 'linarith', 'simp', 'norm_num'])
             for tactic in self.tactic_candidates:
                 if tactic not in candidates:
                     candidates.append(tactic)
@@ -466,7 +510,7 @@ class LeanAgenticPipeline:
         # Build imports and theorem header
         if var_type == 'Real':
             # Real-typed theorems live in a field; emit [Field ℝ] instance
-            imports = "import Mathlib.Tactic\nimport Mathlib.Data.Real.Basic\n\n"
+            imports = "import Mathlib.Tactic\nimport Mathlib.Basic.Real.Basic\n\n"
 
             # For parametric field identities (free vars + symbolic division),
             # emit universal quantification with positivity hypotheses for
@@ -565,9 +609,9 @@ class LeanAgenticPipeline:
                 temp_path = f.name
             
             try:
-                # Compile
+                # Compile – prefer `lake env lean` when a lakefile is present
                 result = subprocess.run(
-                    [self.lean_path or 'lean', temp_path],
+                    self._compile_lean_cmd(temp_path),
                     capture_output=True,
                     text=True,
                     timeout=30,
