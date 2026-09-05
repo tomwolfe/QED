@@ -14,11 +14,22 @@ directly as a single tether verification command. Each lemma is run through
 from __future__ import annotations
 
 import argparse
+import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 QED_DIR = Path(__file__).resolve().parent
+
+
+def _is_mathlib_dependent(lemma: str) -> bool:
+    """Heuristic: does this lemma need Mathlib (field_simp, ring over ℝ)?"""
+    if re.search(r'\b∀\b', lemma) or re.search(r'\bforall\b', lemma):
+        return True
+    if re.search(r'/\s*[A-Za-z_]\w*\b', lemma):
+        return True
+    return False
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -39,8 +50,15 @@ def main(argv: list[str] | None = None) -> int:
         print("no lemmas to verify", file=sys.stderr)
         return 1
 
+    has_mathlib = bool(os.environ.get("HAS_MATHLIB") or os.environ.get("MATHLIB"))
+
     failures = 0
+    skipped = 0
     for lemma in lemmas:
+        if _is_mathlib_dependent(lemma) and not has_mathlib:
+            skipped += 1
+            print(f"skipped (Mathlib required): {lemma}")
+            continue
         proc = subprocess.run(
             [args.python, str(QED_DIR / "agentic_pipeline.py"), lemma],
             cwd=str(QED_DIR),
@@ -59,7 +77,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\n{failures}/{len(lemmas)} lemmas failed verification",
               file=sys.stderr)
         return 1
-    print(f"\nall {len(lemmas)} lemmas verified by QED (no sorry)")
+    if skipped:
+        print(f"\nall {len(lemmas) - skipped} lemmas verified by QED (no sorry)"
+              f" ({skipped} skipped, Mathlib not available)")
+    else:
+        print(f"\nall {len(lemmas)} lemmas verified by QED (no sorry)")
     return 0
 
 

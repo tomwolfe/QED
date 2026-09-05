@@ -243,10 +243,10 @@ def test_tactic_candidates_ode_prioritizes_ode_tactics():
     # ODE inputs must surface the Mathlib ODE tactics.
     assert 'dsimp' in candidates
     assert 'field_simp' in candidates
-    # Ordering: dsimp leads, then field_simp, then ring, before the generic simp.
+    # Ordering: dsimp leads, then field_simp, then ring_nf, before the generic simp.
     assert candidates.index('dsimp') < candidates.index('field_simp')
-    assert candidates.index('field_simp') < candidates.index('ring')
-    assert candidates.index('ring') < candidates.index('simp')
+    assert candidates.index('field_simp') < candidates.index('ring_nf')
+    assert candidates.index('ring_nf') < candidates.index('simp')
 
 
 def test_tactic_candidates_ode_involves_derivative_notation():
@@ -878,8 +878,8 @@ def test_pbpk_ode_tactic_policy_includes_distributive_field():
     )
     assert "dsimp" in cands
     assert "field_simp" in cands
-    assert "ring" in cands
-    assert cands.index("dsimp") < cands.index("field_simp") < cands.index("ring")
+    assert "ring_nf" in cands
+    assert cands.index("dsimp") < cands.index("field_simp") < cands.index("ring_nf")
 
 
 def test_pbpk_symbolic_ode_fails_closed_without_mathlib():
@@ -968,8 +968,8 @@ def test_tactic_candidates_veritrial_symbolic_field_path():
     cands = LeanAgenticPipeline().get_tactic_candidates(
         _VERITRIAL_SYMBOLIC_DISTRIBUTIVE)
     assert "field_simp" in cands
-    assert "ring" in cands
-    assert cands.index("field_simp") < cands.index("ring")
+    assert "ring_nf" in cands
+    assert cands.index("field_simp") < cands.index("ring_nf")
 
 
 def test_get_tactic_candidates_symbolic_orders_mathlib_before_generic():
@@ -980,7 +980,7 @@ def test_get_tactic_candidates_symbolic_orders_mathlib_before_generic():
     cands = LeanAgenticPipeline().get_tactic_candidates(
         _VERITRIAL_SYMBOLIC_DISTRIBUTIVE)
     assert cands.index("field_simp") < cands.index("simp")
-    assert cands.index("ring") < cands.index("simp")
+    assert cands.index("ring_nf") < cands.index("simp")
 
 
 # ---------------------------------------------------------------------------
@@ -1171,9 +1171,9 @@ def test_tactic_candidates_symbolic_rational_prioritizes_field():
     assert "intro" in cands
     assert "dsimp" in cands
     assert "field_simp" in cands
-    assert "ring" in cands
-    assert cands.index("field_simp") < cands.index("ring")
-    assert cands.index("ring") < cands.index("simp")
+    assert "ring_nf" in cands
+    assert cands.index("field_simp") < cands.index("ring_nf")
+    assert cands.index("ring_nf") < cands.index("simp")
 
 
 def test_symbolic_distributive_proves_no_sorry():
@@ -1320,7 +1320,7 @@ def test_tactic_candidates_parametric_orders_intro_first():
     idx_intro = cands.index("intro")
     idx_ds = cands.index("dsimp")
     idx_fs = cands.index("field_simp")
-    idx_ring = cands.index("ring")
+    idx_ring = cands.index("ring_nf")
     idx_lin = cands.index("linarith")
     assert idx_intro < idx_ds < idx_fs < idx_ring < idx_lin
 

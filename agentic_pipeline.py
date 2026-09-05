@@ -24,6 +24,7 @@ from parser import (
     has_polynomial_structure,
     has_rational_structure,
     find_division_variables,
+    extract_positivity_hypotheses,
     statement_kind,
     is_ode,
     involves_derivative,
@@ -336,11 +337,11 @@ class LeanAgenticPipeline:
         # ODE / rate-of-change inputs: prioritize the Mathlib tactics that
         # handle derivatives, division and algebraic structure in the RHS.
         # ``dsimp`` normalizes the derivative head, ``field_simp`` clears the
-        # divisions (C_p = A/V, C_tissue/Kp), and ``ring`` closes the
+        # divisions (C_p = A/V, C_tissue/Kp), and ``ring_nf`` closes the
         # resulting polynomial/field identities. This is the bridge from
         # "algebraic identity checking" to genuine formal-ODE verification.
         if is_ode(expression) or involves_derivative(expression):
-            candidates.extend(['dsimp', 'field_simp', 'ring', 'simp',
+            candidates.extend(['dsimp', 'field_simp', 'ring_nf', 'simp',
                                'norm_num', 'decide'])
             for tactic in self.tactic_candidates:
                 if tactic not in candidates:
@@ -362,10 +363,10 @@ class LeanAgenticPipeline:
         # variables lives in a field ℝ.  Prioritize ``intro`` first (to
         # bring universally quantified variables into scope), then the
         # Mathlib field algebra stack (dsimp to normalize, field_simp to
-        # clear divisions, ring to close polynomial/field identities),
+        # clear divisions, ring_nf to close polynomial/field identities),
         # followed by linarith for any linear side-conditions.
         if has_rational_structure(ast_node):
-            candidates.extend(['intro', 'dsimp', 'field_simp', 'ring',
+            candidates.extend(['intro', 'dsimp', 'field_simp', 'ring_nf',
                                'linarith', 'simp', 'norm_num'])
             for tactic in self.tactic_candidates:
                 if tactic not in candidates:

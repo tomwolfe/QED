@@ -650,6 +650,11 @@ def has_rational_structure(node) -> bool:
     is *not* a pure numeric literal – i.e. the division is symbolic and
     therefore lives in a field (``ℝ``) rather than ``ℕ`` or ``ℤ``.
 
+    Also detects Michaelis-Menten patterns: ``Vmax * C / (Km + C)`` where
+    the denominator is a sum containing a symbolic variable.  This is the
+    canonical enzyme-kinetics form that requires ``Real`` typing and
+    Mathlib's ``field_simp``/``ring`` tactics.
+
     This is used by the agentic pipeline to decide whether the expression
     requires ``Real`` typing and Mathlib's ``field_simp``/``ring`` tactics.
     """
@@ -660,12 +665,45 @@ def has_rational_structure(node) -> bool:
             # Right operand that is not a numeric literal => symbolic division
             if not isinstance(node.right, Num):
                 return True
+            # Michaelis-Menten: denominator is (Km + C) — a parenthesised sum
+            # where at least one operand is symbolic.  The Num right child of
+            # the outer '/' is the whole parenthesised expression, but the
+            # recursive check below catches the inner sum.
+        if node.op == '*' and isinstance(node.right, BinOp) and node.right.op == '/':
+            # Pattern: A * B / (Km + C) — the denominator of the inner '/'
+            # is the parenthesised sum
+            inner_div = node.right
+            if not isinstance(inner_div.right, Num):
+                return True
         return has_rational_structure(node.left) or has_rational_structure(node.right)
     if isinstance(node, Neg):
         return has_rational_structure(node.expr)
     if isinstance(node, (Eq, Ne, Lt, Le, Gt, Ge)):
         return has_rational_structure(node.left) or has_rational_structure(node.right)
     return False
+
+
+def extract_positivity_hypotheses(node) -> List[str]:
+    """Recursively find all variables in division denominators.
+
+    Returns a list of Lean hypothesis strings of the form
+    ``[(hKm : 0 < Km), (hC : 0 < C), ...]`` for every variable that
+    appears in the denominator of a ``/`` node (including nested sums
+    like ``Km + C`` in Michaelis-Menten denominators).
+
+    These positivity hypotheses are required by Mathlib's ``field_simp``
+    to simplify divisions safely over ``ℝ``.
+
+    Examples
+    --------
+    >>> node, _ = parse_equation("Vmax * C / (Km + C)")
+    >>> extract_positivity_hypotheses(node)
+    ['(hC : 0 < C)', '(hKm : 0 < Km)']
+    """
+    if node is None:
+        return []
+    div_vars = find_division_variables(node)
+    return [f"(h{v} : 0 < {v})" for v in sorted(div_vars)]
 
 
 def parse(input_string: str) -> Dict[str, Any]:
