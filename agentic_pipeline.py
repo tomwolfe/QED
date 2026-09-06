@@ -29,6 +29,7 @@ from parser import (
     is_ode,
     involves_derivative,
     is_numeric_equality,
+    _collect_vars,
     BinOp,
     Var,
     Num,
@@ -38,7 +39,31 @@ from parser import (
     Le,
     Gt,
     Ge,
+    Neg,
 )
+
+
+def _collect_division_numerator_vars(node, result: set) -> None:
+    """Collect variable names from the numerator of division expressions.
+
+    ``find_division_variables`` only collects denominator variables, but
+    Mathlib's ``positivity`` tactic also needs the numerator to be positive
+    (e.g. ``Q / Kp > 0`` requires ``Q > 0`` and ``Kp > 0``).  This
+    function walks the AST and adds numerator variables from ``/`` nodes
+    to *result* in-place.
+    """
+    if node is None:
+        return
+    if isinstance(node, BinOp):
+        if node.op == '/':
+            _collect_vars(node.left, result)
+        _collect_division_numerator_vars(node.left, result)
+        _collect_division_numerator_vars(node.right, result)
+    elif isinstance(node, Neg):
+        _collect_division_numerator_vars(node.expr, result)
+    elif isinstance(node, (Eq, Ne, Lt, Le, Gt, Ge)):
+        _collect_division_numerator_vars(node.left, result)
+        _collect_division_numerator_vars(node.right, result)
 
 
 class LeanAgenticPipeline:
@@ -65,7 +90,8 @@ class LeanAgenticPipeline:
         self.use_mathlib = use_mathlib and self._check_mathlib_available()
         self.tactic_candidates = [
             'rfl', 'simp', 'norm_num', 'decide', 'ring', 
-            'linarith', 'omega', 'field_simp', 'dsimp', 'intro'
+            'linarith', 'omega', 'field_simp', 'dsimp', 'intro',
+            'positivity',
         ]
     
     def _find_lean(self) -> Optional[str]:
@@ -514,19 +540,40 @@ class LeanAgenticPipeline:
 
             # For parametric field identities (free vars + symbolic division),
             # emit universal quantification with positivity hypotheses for
-            # variables that appear in division denominators.
+            # variables that appear in division denominators AND numerators
+            # (positivity requires all variables in a ratio to be positive).
             eq_node, _ = parse_equation(expression)
             div_vars = find_division_variables(eq_node) if eq_node else set()
+            # Also collect numerator variables from division nodes for
+            # positivity (Q / Kp > 0 needs both Q > 0 and Kp > 0).
+            if eq_node:
+                _collect_division_numerator_vars(eq_node, div_vars)
             hyp_vars = sorted(div_vars & set(filtered_vars)) if div_vars else []
+
+            # Detect positivity/strict-inequality goals: these need
+            # [LinearOrderedField ℝ] (not [Field ℝ]) so that Mathlib's
+            # `positivity` tactic can see the ordered-field structure.
+            # Plain `ℝ` variables are automatically LinearOrderedField.
+            is_positivity_goal = (
+                hyp_vars
+                and isinstance(eq_node, (Gt, Lt, Ge, Le))
+            )
 
             if filtered_vars:
                 params = ' '.join([f'({v} : ℝ)' for v in filtered_vars])
                 if hyp_vars:
                     hyps = ' '.join([f'(h{v} : 0 < {v})' for v in hyp_vars])
-                    theorem = (
-                        f"theorem qed_goal [Field ℝ] {params} {hyps} "
-                        f": {expression} := by\n"
-                    )
+                    if is_positivity_goal:
+                        # Omit [Field ℝ] so positivity sees LinearOrderedField
+                        theorem = (
+                            f"theorem qed_goal {params} {hyps} "
+                            f": {expression} := by\n"
+                        )
+                    else:
+                        theorem = (
+                            f"theorem qed_goal [Field ℝ] {params} {hyps} "
+                            f": {expression} := by\n"
+                        )
                 else:
                     theorem = f"theorem qed_goal [Field ℝ] {params} : {expression} := by\n"
             else:

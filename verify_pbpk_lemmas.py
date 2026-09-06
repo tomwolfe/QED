@@ -51,6 +51,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     has_mathlib = bool(os.environ.get("HAS_MATHLIB") or os.environ.get("MATHLIB"))
+    # Also detect Mathlib via Lake build environment (lakefile.lean present).
+    if not has_mathlib:
+        has_mathlib = (QED_DIR / "lakefile.lean").exists()
 
     failures = 0
     skipped = 0
