@@ -407,9 +407,14 @@ class LeanAgenticPipeline:
         # divisions (C_p = A/V, C_tissue/Kp), and ``ring_nf`` closes the
         # resulting polynomial/field identities. This is the bridge from
         # "algebraic identity checking" to genuine formal-ODE verification.
+        # Compound tactics chain multiple steps in one tactic block.
         if is_ode(expression) or involves_derivative(expression):
-            candidates.extend(['dsimp', 'field_simp', 'ring_nf', 'simp',
-                               'norm_num', 'decide'])
+            candidates.extend([
+                'intros; dsimp; field_simp; ring',
+                'intros; field_simp; ring',
+                'dsimp', 'field_simp', 'ring_nf', 'simp',
+                'norm_num', 'decide',
+            ])
             for tactic in self.tactic_candidates:
                 if tactic not in candidates:
                     candidates.append(tactic)
@@ -434,10 +439,19 @@ class LeanAgenticPipeline:
         # followed by linarith for any linear side-conditions.
         # ``simp [mul_sub, mul_div_assoc]`` handles the canonical
         # distributive-over-division identity that field_simp alone cannot.
+        # Compound tactics (semicoloned sequences) are tried as atomic
+        # proof terms: e.g. ``by intros; field_simp; ring`` chains intro
+        # + field simplification + ring in one tactic block.
         if has_rational_structure(ast_node):
-            candidates.extend(['intro', 'dsimp', 'field_simp',
-                               'simp [mul_sub, mul_div_assoc]',
-                               'ring_nf', 'linarith', 'simp', 'norm_num'])
+            candidates.extend([
+                'intros; positivity',
+                'intros; field_simp; ring',
+                'intros; dsimp; field_simp; ring',
+                'intros; simp [mul_sub, mul_div_assoc]; ring',
+                'intro', 'dsimp', 'field_simp',
+                'simp [mul_sub, mul_div_assoc]',
+                'ring_nf', 'linarith', 'simp', 'norm_num',
+            ])
             for tactic in self.tactic_candidates:
                 if tactic not in candidates:
                     candidates.append(tactic)
@@ -445,9 +459,17 @@ class LeanAgenticPipeline:
         
         # Classify using AST helpers
         if contains_op(ast_node, '/'):
-            candidates.extend(['field_simp', 'ring', 'norm_num', 'simp'])
+            candidates.extend([
+                'intros; positivity',
+                'intros; field_simp; ring',
+                'field_simp', 'ring', 'norm_num', 'simp',
+            ])
         elif is_inequality(ast_node):
-            candidates.extend(['linarith', 'omega', 'simp', 'norm_num'])
+            candidates.extend([
+                'intros; positivity',
+                'intros; linarith',
+                'linarith', 'omega', 'simp', 'norm_num',
+            ])
         elif has_polynomial_structure(ast_node):
             candidates.extend(['ring', 'simp', 'linarith', 'norm_num'])
         else:
