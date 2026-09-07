@@ -506,6 +506,9 @@ def _collect_vars(node: Optional[ASTNode], result: set[str]) -> None:
         _collect_vars(node.right, result)
     elif isinstance(node, Neg):
         _collect_vars(node.expr, result)
+    elif isinstance(node, (Eq, Ne, Lt, Le, Gt, Ge)):
+        _collect_vars(node.left, result)
+        _collect_vars(node.right, result)
 
 def has_rational_structure(node: Optional[ASTNode]) -> bool:
     """Detect division over symbolic (non-numeric) variables.
@@ -620,6 +623,40 @@ def is_metzler_positivity(node: Optional[ASTNode]) -> bool:
     if 'Q' not in num_vars:
         return False
     return 'Kp' in den_vars
+
+def is_boundary_flow_positivity(node: Optional[ASTNode]) -> bool:
+    """Compartmental boundary inflow: ``(Q / (V * Kp)) * A >= 0`` or similar.
+
+    Returns True when the node is a non-strict inequality (Ge/Le, either
+    orientation with 0 on one side) whose non-zero side is a product
+    containing a division of ``Q`` by ``V * Kp`` (or ``V * Kp`` alone)
+    multiplied by a state variable ``A``.  This represents the
+    non-negativity of perfusion inflow into a compartment when the
+    source amount is non-negative.
+    """
+    if node is None:
+        return False
+    if isinstance(node, Ge):
+        lhs, rhs = (node.left, node.right)
+    elif isinstance(node, Le):
+        lhs, rhs = (node.right, node.left)
+    else:
+        return False
+    if not (isinstance(rhs, Num) and rhs.value == 0):
+        return False
+    # lhs should be a product: (Q / (V * Kp)) * A  or  Q * A / (V * Kp)
+    if not isinstance(lhs, BinOp):
+        return False
+    all_vars: set[str] = set()
+    _collect_vars(lhs, all_vars)
+    # Must contain the PBPK signature variables
+    if 'Q' not in all_vars:
+        return False
+    if not any(v.startswith('Kp') or v.startswith('V_') or v == 'V'
+               for v in all_vars):
+        return False
+    # Must contain a division node (the Q / ... pattern)
+    return contains_op(lhs, '/')
 
 def is_discrete_step_conservation(node: Optional[ASTNode]) -> bool:
     """Discrete-step conservation: ``sum(y_i + dt * f_i) = sum(y_i) + dt * sum(f_i)``.

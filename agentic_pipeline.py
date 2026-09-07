@@ -432,9 +432,10 @@ class LeanAgenticPipeline:
         # discrete-step conservation proves via ``field_simp; ring``.
         try:
             from parser import is_metzler_positivity as _is_metz, \
-                is_discrete_step_conservation as _is_step
+                is_discrete_step_conservation as _is_step, \
+                is_boundary_flow_positivity as _is_bflow
         except ImportError:
-            _is_metz = _is_step = None  # type: ignore[assignment]
+            _is_metz = _is_step = _is_bflow = None  # type: ignore[assignment]
         if _is_metz is not None and _is_metz(ast_node):
             candidates.extend(['intros; positivity', 'positivity',
                                'intros; field_simp; ring'])
@@ -445,6 +446,20 @@ class LeanAgenticPipeline:
         if _is_step is not None and _is_step(ast_node):
             candidates.extend(['intros; field_simp; ring', 'field_simp',
                                'ring', 'intros; positivity'])
+            for tactic in self.tactic_candidates:
+                if tactic not in candidates:
+                    candidates.append(tactic)
+            return candidates
+        if _is_bflow is not None and _is_bflow(ast_node):
+            # Boundary flow positivity: (Q / (V * Kp)) * A >= 0
+            # Proved by positivity (all factors non-negative) or
+            # field_simp + linarith (linear combination of non-neg terms).
+            candidates.extend([
+                'intros; positivity',
+                'intros; field_simp; linarith',
+                'intros; field_simp; ring',
+                'positivity', 'linarith',
+            ])
             for tactic in self.tactic_candidates:
                 if tactic not in candidates:
                     candidates.append(tactic)
@@ -601,6 +616,17 @@ class LeanAgenticPipeline:
                 _collect_division_numerator_vars(eq_node, div_vars)
             hyp_vars = sorted(div_vars & set(filtered_vars)) if div_vars else []
 
+            # For Ge/Le inequalities (>= 0 / <= 0), collect non-division
+            # variables that need non-strict positivity (0 ≤ A).  These are
+            # state variables bounded below by zero but not in denominators.
+            nonstrict_hyp_vars: list[str] = []
+            if isinstance(eq_node, (Ge, Le)) and eq_node is not None:
+                all_expr_vars: set[str] = set()
+                _collect_vars(eq_node, all_expr_vars)
+                nonstrict_hyp_vars = sorted(
+                    (all_expr_vars - div_vars) & set(filtered_vars)
+                )
+
             # Detect positivity/strict-inequality goals: these need
             # [LinearOrderedField ℝ] (not [Field ℝ]) so that Mathlib's
             # `positivity` tactic can see the ordered-field structure.
@@ -612,21 +638,30 @@ class LeanAgenticPipeline:
 
             if filtered_vars:
                 params = ' '.join([f'({v} : ℝ)' for v in filtered_vars])
-                if hyp_vars:
-                    hyps = ' '.join([f'(h{v} : 0 < {v})' for v in hyp_vars])
+                if hyp_vars or nonstrict_hyp_vars:
+                    strict_hyps = ' '.join([f'(h{v} : 0 < {v})' for v in hyp_vars])
+                    nonstrict_hyps = ' '.join([f'(hn{v} : 0 ≤ {v})' for v in nonstrict_hyp_vars])
+                    all_hyps = ' '.join(h for h in [strict_hyps, nonstrict_hyps] if h)
                     if is_positivity_goal:
                         # Omit [Field ℝ] so positivity sees LinearOrderedField
                         theorem = (
-                            f"theorem qed_goal {params} {hyps} "
+                            f"theorem qed_goal {params} {all_hyps} "
                             f": {expression} := by\n"
                         )
                     else:
                         theorem = (
-                            f"theorem qed_goal [Field ℝ] {params} {hyps} "
+                            f"theorem qed_goal [Field ℝ] {params} {all_hyps} "
                             f": {expression} := by\n"
                         )
                 else:
-                    theorem = f"theorem qed_goal [Field ℝ] {params} : {expression} := by\n"
+                    if nonstrict_hyp_vars:
+                        nonstrict_hyps = ' '.join([f'(hn{v} : 0 ≤ {v})' for v in nonstrict_hyp_vars])
+                        theorem = (
+                            f"theorem qed_goal {params} {nonstrict_hyps} "
+                            f": {expression} := by\n"
+                        )
+                    else:
+                        theorem = f"theorem qed_goal [Field ℝ] {params} : {expression} := by\n"
             else:
                 theorem = f"theorem qed_goal [Field ℝ] : {expression} := by\n"
         else:

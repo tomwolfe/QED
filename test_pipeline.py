@@ -1644,3 +1644,56 @@ def test_parse_lone_minus_is_none() -> None:
     node, pos = parse_expression(tokenize("-"))
     assert node is None
     assert pos == 1
+
+
+def test_is_boundary_flow_positivity_detects_pattern() -> None:
+    """Parser detects compartmental boundary inflow: (Q / (V * Kp)) * A >= 0."""
+    from parser import is_boundary_flow_positivity, parse_equation
+    node, _ = parse_equation("(Q / (V_central * Kp)) * A_central >= 0")
+    assert node is not None
+    assert is_boundary_flow_positivity(node) is True
+
+
+def test_is_boundary_flow_positivity_rejects_missing_q() -> None:
+    """Expression without Q is not boundary flow positivity."""
+    from parser import is_boundary_flow_positivity, parse_equation
+    node, _ = parse_equation("x / y * z >= 0")
+    assert node is not None
+    assert is_boundary_flow_positivity(node) is False
+
+
+def test_is_boundary_flow_positivity_rejects_strict() -> None:
+    """Strict inequality (> 0) is not boundary flow (non-negativity requires >=)."""
+    from parser import is_boundary_flow_positivity, parse_equation
+    node, _ = parse_equation("(Q / (V * Kp)) * A > 0")
+    assert node is not None
+    assert is_boundary_flow_positivity(node) is False
+
+
+def test_boundary_flow_positivity_tactic_candidates() -> None:
+    """Boundary flow positivity prioritizes intros; positivity and linarith."""
+    from agentic_pipeline import LeanAgenticPipeline
+    cands = LeanAgenticPipeline().get_tactic_candidates(
+        "(Q / (V_central * Kp)) * A_central >= 0"
+    )
+    assert "intros; positivity" in cands
+    assert "intros; field_simp; linarith" in cands
+
+
+def test_boundary_flow_positivity_proves_no_sorry() -> None:
+    """Compartmental boundary inflow (Q / (V * Kp)) * A >= 0 proves without sorry.
+
+    With hypotheses 0 < Q, 0 < V, 0 < Kp, and 0 <= A, the expression
+    is a product of non-negative terms and proves via positivity over ℝ.
+    """
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline(use_mathlib=True)
+    res = pipeline.run("(Q / (V_central * Kp)) * A_central >= 0")
+    if pipeline.use_mathlib:
+        assert res["success"] is True
+        assert "sorry" not in res["lean_code"]
+        assert "sorryAx" not in res["lean_code"]
+        assert res["verification"]["axioms_check"] == "passed"
+    else:
+        assert res["success"] is False
+        assert "sorry" not in res.get("lean_code", "")
