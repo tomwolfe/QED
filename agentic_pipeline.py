@@ -431,6 +431,29 @@ class LeanAgenticPipeline:
             tokens = normalize_implicit_multiplication(tokens)
             ast_node, _ = parse_expression(tokens)
         
+        # Dynamical invariants: Jacobian off-diagonal (Metzler) positivity
+        # ``Q / Kp > 0`` / ``Q / (V * Kp) > 0`` proves via ``positivity``;
+        # discrete-step conservation proves via ``field_simp; ring``.
+        try:
+            from parser import is_metzler_positivity as _is_metz, \
+                is_discrete_step_conservation as _is_step
+        except ImportError:
+            _is_metz = _is_step = None  # type: ignore[assignment]
+        if _is_metz is not None and _is_metz(ast_node):
+            candidates.extend(['intros; positivity', 'positivity',
+                               'intros; field_simp; ring'])
+            for tactic in self.tactic_candidates:
+                if tactic not in candidates:
+                    candidates.append(tactic)
+            return candidates
+        if _is_step is not None and _is_step(ast_node):
+            candidates.extend(['intros; field_simp; ring', 'field_simp',
+                               'ring', 'intros; positivity'])
+            for tactic in self.tactic_candidates:
+                if tactic not in candidates:
+                    candidates.append(tactic)
+            return candidates
+
         # Symbolic Real / rational expressions: division over symbolic
         # variables lives in a field ℝ.  Prioritize ``intro`` first (to
         # bring universally quantified variables into scope), then the

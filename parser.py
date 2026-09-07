@@ -744,6 +744,57 @@ def has_compartmental_structure(node) -> bool:
     return _walk(node)
 
 
+def is_metzler_positivity(node) -> bool:
+    """Jacobian off-diagonal positivity: ``Q / (V * Kp) > 0`` or ``Q / Kp > 0``.
+
+    Returns True when the node is a strict inequality (Gt/Lt, either
+    orientation) whose positive side is a division of ``Q`` by a ``Kp``
+    (optionally via ``V * Kp``) term.
+    """
+    if node is None:
+        return False
+    if isinstance(node, Gt):
+        lhs, rhs = node.left, node.right
+    elif isinstance(node, Lt):
+        lhs, rhs = node.right, node.left
+    else:
+        return False
+    if not (isinstance(rhs, Num) and rhs.value == 0):
+        return False
+    if not (isinstance(lhs, BinOp) and lhs.op == '/'):
+        return False
+    num_vars: set = set()
+    _collect_vars(lhs.left, num_vars)
+    den_vars: set = set()
+    _collect_vars(lhs.right, den_vars)
+    if "Q" not in num_vars:
+        return False
+    return "Kp" in den_vars
+
+
+def is_discrete_step_conservation(node) -> bool:
+    """Discrete-step conservation: ``sum(y_i + dt * f_i) = sum(y_i) + dt * sum(f_i)``.
+
+    Structural check on the LaTeX round-trip: an Eq whose left mentions
+    ``dt`` and whose right mentions both ``dt`` and ``sum`` (or the
+    per-index sum pattern ``y_i``/``f_i``).
+    """
+    if not isinstance(node, Eq):
+        return False
+    latex = ast_to_latex(node)
+    if "=" not in latex:
+        return False
+    left, right = latex.split("=", 1)
+    # NOTE: implicit-multiplication normalization splits ``dt`` into
+    # ``d * t``; accept either spelling.
+    has_dt = lambda s: ("dt" in s) or ("d * t" in s)
+    if not has_dt(left):
+        return False
+    if not has_dt(right):
+        return False
+    return ("sum" in latex) or ("y_i" in latex and "f_i" in latex)
+
+
 def parse(input_string: str) -> Dict[str, Any]:
     """Parse a mathematical statement and return structured information.
     
