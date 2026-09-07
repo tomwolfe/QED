@@ -15,7 +15,6 @@ from typing import List, Optional, Tuple, Dict, Any
 from parser import (
     parse_equation,
     parse_expression,
-    extract_free_variables,
     tokenize,
     normalize_implicit_multiplication,
     contains_op,
@@ -24,15 +23,13 @@ from parser import (
     has_polynomial_structure,
     has_rational_structure,
     find_division_variables,
-    extract_positivity_hypotheses,
     statement_kind,
     is_ode,
     involves_derivative,
     is_numeric_equality,
     _collect_vars,
+    ASTNode,
     BinOp,
-    Var,
-    Num,
     Eq,
     Ne,
     Lt,
@@ -43,7 +40,7 @@ from parser import (
 )
 
 
-def _collect_division_numerator_vars(node, result: set) -> None:
+def _collect_division_numerator_vars(node: object, result: set[str]) -> None:
     """Collect variable names from the numerator of division expressions.
 
     ``find_division_variables`` only collects denominator variables, but
@@ -118,7 +115,7 @@ class LeanAgenticPipeline:
                     if toolchains:
                         return lean_path
                 return None
-        except:
+        except Exception:
             pass
         return None
     
@@ -184,14 +181,14 @@ class LeanAgenticPipeline:
                     env=env
                 )
                 return result.returncode == 0
-            except:
+            except Exception:
                 return False
             finally:
                 try:
                     os.unlink(temp_path)
-                except:
+                except Exception:
                     pass
-        except:
+        except Exception:
             return False
     
     def validate_input(self, latex_input: str) -> Tuple[bool, str]:
@@ -365,7 +362,7 @@ class LeanAgenticPipeline:
         finally:
             try:
                 os.unlink(verify_path)
-            except:
+            except Exception:
                 pass
     
     def get_tactic_candidates(self, expression: str) -> List[str]:
@@ -423,9 +420,8 @@ class LeanAgenticPipeline:
         # Parse expression to get AST for classification
         eq, _ = parse_equation(expression)
         
-        if eq is not None:
-            ast_node = eq
-        else:
+        ast_node: ASTNode | None = eq
+        if ast_node is None:
             # For non-equation expressions, parse the full expression
             tokens = tokenize(expression)
             tokens = normalize_implicit_multiplication(tokens)
@@ -465,6 +461,18 @@ class LeanAgenticPipeline:
         # Compound tactics (semicoloned sequences) are tried as atomic
         # proof terms: e.g. ``by intros; field_simp; ring`` chains intro
         # + field simplification + ring in one tactic block.
+        # Metzler positivity: strict inequality with division → positivity tactic
+        if isinstance(ast_node, (Gt, Lt)) and contains_op(ast_node, '/'):
+            candidates.extend([
+                'intros; positivity',
+                'intros; field_simp; positivity',
+                'positivity',
+            ])
+            for tactic in self.tactic_candidates:
+                if tactic not in candidates:
+                    candidates.append(tactic)
+            return candidates
+
         if has_rational_structure(ast_node):
             candidates.extend([
                 'intros; positivity',
@@ -516,7 +524,6 @@ class LeanAgenticPipeline:
             Selected tactic
         """
         goal = error_info.get('goal', '')
-        error = error_info.get('error', '')
         expected_type = error_info.get('expected_type', '')
         
         # Strip the turnstile prefix from Lean goals for parsing
@@ -524,9 +531,8 @@ class LeanAgenticPipeline:
         
         # Parse the goal to get an AST for classification
         goal_eq, _ = parse_equation(goal_text)
-        if goal_eq is not None:
-            goal_ast = goal_eq
-        else:
+        goal_ast: ASTNode | None = goal_eq
+        if goal_ast is None:
             tokens = tokenize(goal_text)
             tokens = normalize_implicit_multiplication(tokens)
             goal_ast, _ = parse_expression(tokens)
@@ -683,9 +689,9 @@ class LeanAgenticPipeline:
         
         # Parse expression
         eq, free_vars = parse_equation(expression)
-        
+
         # Generate base Lean code
-        base_code = self.generate_lean_code(expression, free_vars)
+        base_code = self.generate_lean_code(expression, free_vars or [])
         
         # Get tactic candidates
         candidates = self.get_tactic_candidates(expression)
@@ -783,7 +789,7 @@ class LeanAgenticPipeline:
                 # Cleanup
                 try:
                     os.unlink(temp_path)
-                except:
+                except Exception:
                     pass
         
         return {
@@ -830,7 +836,7 @@ class LeanAgenticPipeline:
         return self.execute_tactic_loop(latex_input)
 
 
-def main():
+def main() -> None:
     """CLI entry point."""
     if len(sys.argv) < 2:
         print("Usage: python3 agentic_pipeline.py <mathematical_expression>")
