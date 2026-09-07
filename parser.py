@@ -294,7 +294,7 @@ def parse_primary(tokens: List[str], pos: int=0) -> Tuple[Optional[ASTNode], int
         var_name = token
         return (Var(var_name), pos + 1)
     elif token == '-':
-        if pos - 1 < len(tokens):
+        if pos + 1 < len(tokens):
             next_token = tokens[pos + 1]
             if next_token.isdigit() or (next_token.startswith('-') and next_token[1:].isdigit()) or (next_token.isalpha() or (next_token.startswith('_') and next_token[1:].isalpha())) or (next_token == '('):
                 expr, pos = parse_primary(tokens, pos + 1)
