@@ -255,6 +255,11 @@ class LeanAgenticPipeline:
         if re.search(r'\([^)]*-\s*\w[^)]*\)', expression):
             return 'Int'
         
+        # Inequalities involving multiplication of symbolic variables
+        # (e.g. CL * C_p > 0) need Real for positivity hypotheses.
+        if re.search(r'[><=!]', expression) and re.search(r'\w\s*\*\s*\w', expression):
+            return 'Real'
+        
         # Default to Nat for non-negative
         return 'Nat'
     
@@ -616,21 +621,30 @@ class LeanAgenticPipeline:
                 _collect_division_numerator_vars(eq_node, div_vars)
             hyp_vars = sorted(div_vars & set(filtered_vars)) if div_vars else []
 
+            # For strict inequalities (Gt/Lt) with no division variables,
+            # generate strict positivity hypotheses for ALL variables.
+            # E.g. CL * C_p > 0 needs (hCL : 0 < CL) (hC_p : 0 < C_p).
+            if not hyp_vars and isinstance(eq_node, (Gt, Lt)) and eq_node is not None:
+                all_expr_vars: set[str] = set()
+                _collect_vars(eq_node, all_expr_vars)
+                hyp_vars = sorted(all_expr_vars & set(filtered_vars))
+
             # For Ge/Le inequalities (>= 0 / <= 0), collect non-division
             # variables that need non-strict positivity (0 ≤ A).  These are
             # state variables bounded below by zero but not in denominators.
             nonstrict_hyp_vars: list[str] = []
             if isinstance(eq_node, (Ge, Le)) and eq_node is not None:
-                all_expr_vars: set[str] = set()
-                _collect_vars(eq_node, all_expr_vars)
+                all_expr_vars_ge: set[str] = set()
+                _collect_vars(eq_node, all_expr_vars_ge)
                 nonstrict_hyp_vars = sorted(
-                    (all_expr_vars - div_vars) & set(filtered_vars)
+                    (all_expr_vars_ge - div_vars) & set(filtered_vars)
                 )
 
             # Detect positivity/strict-inequality goals: these need
             # [LinearOrderedField ℝ] (not [Field ℝ]) so that Mathlib's
             # `positivity` tactic can see the ordered-field structure.
             # Plain `ℝ` variables are automatically LinearOrderedField.
+            # Must be computed AFTER hyp_vars is finalized.
             is_positivity_goal = (
                 hyp_vars
                 and isinstance(eq_node, (Gt, Lt, Ge, Le))
