@@ -71,13 +71,15 @@ class LeanAgenticPipeline:
     the final Lean file to compile without `sorry` placeholders.
     """
     
-    def __init__(self, use_mathlib: bool = True, lean_path: Optional[str] = None):
+    def __init__(self, use_mathlib: bool = True, lean_path: Optional[str] = None,
+                 adapter: Optional[Any] = None):
         """
         Initialize the pipeline.
         
         Args:
             use_mathlib: Whether to use Mathlib tactics
             lean_path: Path to lean executable (or None to search PATH)
+            adapter: Optional agent adapter for agentic repair (must have send(prompt, session) method)
         """
         self.lean_path = lean_path or self._find_lean()
         # Detect Lake environment for hermetic Mathlib builds
@@ -85,6 +87,7 @@ class LeanAgenticPipeline:
         self._lake_env_lean = self._build_lake_env_lean_cmd()
         # Auto-detect Mathlib availability
         self.use_mathlib = use_mathlib and self._check_mathlib_available()
+        self.adapter = adapter
         self.tactic_candidates = [
             'rfl', 'simp', 'norm_num', 'decide', 'ring', 
             'linarith', 'omega', 'field_simp', 'dsimp', 'intro',
@@ -369,7 +372,63 @@ class LeanAgenticPipeline:
                 os.unlink(verify_path)
             except Exception:
                 pass
-    
+
+    @staticmethod
+    def _parse_lean_goal(stderr: str) -> Optional[str]:
+        """Extract the proof goal after the turnstile (⊢) from Lean 4 compiler stderr.
+
+        Returns the goal text (without the ⊢ prefix) or None if no goal is found.
+        """
+        # Lean 4 error messages embed the goal after ⊢ on the same or next line
+        match = re.search(r'⊢\s*(.+?)(?:\n|$)', stderr)
+        if match:
+            return match.group(1).strip()
+        return None
+
+    def _construct_repair_prompt(
+        self,
+        goal: str,
+        lean_code: str,
+        error_output: str,
+        expression: str,
+    ) -> str:
+        """Build an agentic repair prompt from the parsed goal and error context."""
+        return (
+            "You are a Lean 4 proof assistant. The following theorem failed to compile.\n\n"
+            f"Theorem expression: {expression}\n\n"
+            f"Current Lean code:\n```lean\n{lean_code}\n```\n\n"
+            f"Compiler error (relevant excerpt):\n```\n{error_output[:2000]}\n```\n\n"
+            f"Proof goal: ⊢ {goal}\n\n"
+            "Respond with a SINGLE valid Lean tactic or tactic sequence that closes this goal. "
+            "Output ONLY the tactic text, no explanation. Examples: `ring`, `simp [foo]`, "
+            "`intro x; exact h`, `positivity`, `linarith`."
+        )
+
+    @staticmethod
+    def _parse_adapter_tactic(response_text: str) -> Optional[str]:
+        """Extract a Lean tactic from an adapter response.
+
+        Looks for text inside ```lean ... ``` blocks, or falls back to the
+        first non-empty line that looks like a tactic (no period at end,
+        contains lowercase letters or known tactic keywords).
+        """
+        # Try fenced code block first
+        fenced = re.search(r'```(?:lean)?\s*\n?(.+?)\n?```', response_text, re.DOTALL)
+        if fenced:
+            candidate = fenced.group(1).strip()
+            if candidate:
+                return candidate
+        # Fall back: first non-empty line that is not a sentence
+        for line in response_text.strip().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            # Skip lines that look like prose (start with capital, end with period)
+            if line[0].isupper() and line.endswith('.'):
+                continue
+            return line
+        return None
+
     def get_tactic_candidates(self, expression: str) -> List[str]:
         """
         Get ordered tactic candidates based on expression type.
@@ -840,7 +899,90 @@ class LeanAgenticPipeline:
                     os.unlink(temp_path)
                 except Exception:
                     pass
-        
+
+        # --- Agentic repair: after static candidates exhaust, use adapter ---
+        if self.adapter is not None:
+            # Collect the last error output that contains a goal
+            last_goal: Optional[str] = None
+            last_error: str = ""
+            for att in reversed(attempts):
+                combined = att.get('stdout', '') + '\n' + att.get('stderr', '')
+                goal = self._parse_lean_goal(combined)
+                if goal is not None:
+                    last_goal = goal
+                    last_error = combined
+                    break
+
+            if last_goal is not None:
+                for repair_idx in range(3):
+                    prompt = self._construct_repair_prompt(
+                        last_goal, base_code, last_error, expression,
+                    )
+                    try:
+                        session = type('obj', (object,), {
+                            'session_id': f'qed-repair-{repair_idx}',
+                            'project_dir': os.getcwd(),
+                        })()
+                        state = self.adapter.send(prompt, session)
+                        response_text = getattr(state, 'logs', '') or ''
+                        tactic = self._parse_adapter_tactic(response_text)
+                        if tactic is None:
+                            continue
+
+                        lean_code = base_code + f"  {tactic}\n"
+                        with tempfile.NamedTemporaryFile(
+                            mode='w', suffix='.lean', delete=False,
+                        ) as f:
+                            f.write(lean_code)
+                            temp_path = f.name
+                        try:
+                            result = subprocess.run(
+                                self._compile_lean_cmd(temp_path),
+                                capture_output=True, text=True,
+                                timeout=30, env=os.environ.copy(),
+                            )
+                            has_sorry, sorry_reason = self.check_for_sorry(
+                                lean_code, result.stdout + result.stderr,
+                            )
+                            attempt = {
+                                'iteration': len(attempts) + repair_idx,
+                                'tactic': f'[adapter] {tactic}',
+                                'exit_code': result.returncode,
+                                'has_sorry': has_sorry,
+                                'sorry_reason': sorry_reason,
+                                'stdout': result.stdout[:500],
+                                'stderr': result.stderr[:500],
+                            }
+                            attempts.append(attempt)
+                            if result.returncode == 0 and not has_sorry:
+                                axioms_clean, axioms_reason = (
+                                    self._verify_no_sorry_axioms(temp_path)
+                                )
+                                if axioms_clean:
+                                    return {
+                                        'success': True,
+                                        'lean_code': lean_code,
+                                        'tactic': f'[adapter] {tactic}',
+                                        'attempts': attempts,
+                                        'verification': {
+                                            'source_check': 'passed',
+                                            'compiler_check': 'passed',
+                                            'axioms_check': 'passed',
+                                        },
+                                    }
+                                else:
+                                    attempt['has_sorry'] = True
+                                    attempt['sorry_reason'] = axioms_reason
+                        except Exception:
+                            pass
+                        finally:
+                            try:
+                                os.unlink(temp_path)
+                            except Exception:
+                                pass
+                    except Exception:
+                        continue
+
         return {
             'success': False,
             'error': f'No tactic succeeded after {len(attempts)} attempts',

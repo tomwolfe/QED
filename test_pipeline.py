@@ -1697,3 +1697,106 @@ def test_boundary_flow_positivity_proves_no_sorry() -> None:
     else:
         assert res["success"] is False
         assert "sorry" not in res.get("lean_code", "")
+
+
+# --- Agentic repair tests ---
+
+def test_parse_lean_goal_basic() -> None:
+    """_parse_lean_goal extracts text after ⊢ from Lean stderr."""
+    from agentic_pipeline import LeanAgenticPipeline
+    stderr = "error: type mismatch\n  ⊢ a + b = b + a\nhas type\n  Prop"
+    goal = LeanAgenticPipeline._parse_lean_goal(stderr)
+    assert goal == "a + b = b + a"
+
+
+def test_parse_lean_goal_no_turnstile() -> None:
+    """_parse_lean_goal returns None when no ⊢ is present."""
+    from agentic_pipeline import LeanAgenticPipeline
+    assert LeanAgenticPipeline._parse_lean_goal("some random error") is None
+
+
+def test_parse_adapter_tactic_fenced_block() -> None:
+    """_parse_adapter_tactic extracts tactic from ```lean fenced block."""
+    from agentic_pipeline import LeanAgenticPipeline
+    response = "Here is the tactic:\n```lean\nring\n```\nHope this helps."
+    tactic = LeanAgenticPipeline._parse_adapter_tactic(response)
+    assert tactic == "ring"
+
+
+def test_parse_adapter_tactic_plain_line() -> None:
+    """_parse_adapter_tactic falls back to first plausible line."""
+    from agentic_pipeline import LeanAgenticPipeline
+    response = "simp [add_comm]"
+    tactic = LeanAgenticPipeline._parse_adapter_tactic(response)
+    assert tactic == "simp [add_comm]"
+
+
+def test_parse_adapter_tactic_skips_prose() -> None:
+    """_parse_adapter_tactic skips lines that look like prose."""
+    from agentic_pipeline import LeanAgenticPipeline
+    response = "This is the correct tactic.\nfield_simp"
+    tactic = LeanAgenticPipeline._parse_adapter_tactic(response)
+    assert tactic == "field_simp"
+
+
+def test_agentic_adapter_called_on_failure(monkeypatch: Any) -> None:
+    """When static tactics fail and a goal is parsed, the adapter is called."""
+    from agentic_pipeline import LeanAgenticPipeline
+    from dataclasses import dataclass
+
+    @dataclass
+    class _FakeState:
+        logs: str = "positivity"
+
+    @dataclass
+    class _FakeSession:
+        session_id: str = ""
+        project_dir: str = ""
+
+    class _FakeAdapter:
+        def __init__(self):
+            self.calls: list[str] = []
+        def send(self, prompt: str, session: Any) -> _FakeState:
+            self.calls.append(prompt)
+            return _FakeState(logs="positivity")
+
+    adapter = _FakeAdapter()
+    pipeline = LeanAgenticPipeline(use_mathlib=False, adapter=adapter)
+
+    # Mock compile to always fail with a goal on first attempts,
+    # then succeed when tactic is "positivity"
+    call_count = [0]
+
+    def _mock_run(cmd, **kwargs):
+        call_count[0] += 1
+        if call_count[0] <= 15:
+            # Static tactic attempts: fail with a goal
+            return type('Result', (), {
+                'returncode': 1,
+                'stdout': '',
+                'stderr': 'error: type mismatch\n  ⊢ 0 < 1\nhas type\n  Prop',
+            })()
+        # Adapter-provided tactic: succeed
+        return type('Result', (), {
+            'returncode': 0,
+            'stdout': '',
+            'stderr': '',
+        })()
+
+    monkeypatch.setattr(subprocess, 'run', _mock_run)
+
+    # Patch _verify_no_sorry_axioms to always pass
+    monkeypatch.setattr(
+        LeanAgenticPipeline, '_verify_no_sorry_axioms',
+        lambda self, path: (True, ''),
+    )
+    # Patch check_for_sorry to always return clean
+    monkeypatch.setattr(
+        LeanAgenticPipeline, 'check_for_sorry',
+        lambda self, src, out: (False, ''),
+    )
+
+    result = pipeline.run("0 < 1")
+    # Adapter should have been called because static tactics exhausted
+    assert len(adapter.calls) >= 1
+    assert "⊢ 0 < 1" in adapter.calls[0]
