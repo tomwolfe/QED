@@ -45,7 +45,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     lemmas = [line.strip() for line in args.lemmas.read_text().splitlines()
-              if line.strip()]
+               if line.strip() and not line.strip().startswith("--")]
     if not lemmas:
         print("no lemmas to verify", file=sys.stderr)
         return 1
