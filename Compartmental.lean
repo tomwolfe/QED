@@ -148,3 +148,73 @@ theorem totalMass_non_increasing [Fintype n] [DecidableEq n]
   linarith
 
 end Compartmental
+
+/-! ## Full 6-compartment PBPK system matrix (VeriTrial `pbpk_ode`).
+
+State order: 0 = gut, 1 = liver, 2 = central, 3 = periph, 4 = effect, 5 = elim.
+See `VeriTrial/src/insilico_trial/pbpk/model.py :: pbpk_ode`.
+-/
+
+namespace Compartmental
+
+/-- Symbolic 6-compartment PBPK Jacobian. -/
+noncomputable def pbpkK (ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL : ℝ) :
+    Fin 6 → Fin 6 → ℝ := fun i j =>
+  if i.val = 0 ∧ j.val = 0 then -ka
+  else if i.val = 2 ∧ j.val = 0 then ka
+  else if i.val = 1 ∧ j.val = 1 then -(Ql / (Vl * Kpl))
+  else if i.val = 1 ∧ j.val = 2 then Ql / Vc
+  else if i.val = 3 ∧ j.val = 3 then -(Qp / (Vp * Kpp))
+  else if i.val = 3 ∧ j.val = 2 then Qp / Vc
+  else if i.val = 4 ∧ j.val = 4 then -(Qe / (Ve * Kpe))
+  else if i.val = 4 ∧ j.val = 2 then Qe / Vc
+  else if i.val = 2 ∧ j.val = 1 then Ql / (Vl * Kpl)
+  else if i.val = 2 ∧ j.val = 3 then Qp / (Vp * Kpp)
+  else if i.val = 2 ∧ j.val = 4 then Qe / (Ve * Kpe)
+  else if i.val = 2 ∧ j.val = 2 then (-(Ql + Qp + Qe) / Vc - CL / Vc)
+  else if i.val = 5 ∧ j.val = 2 then CL / Vc
+  else 0
+
+/-- PBPK system matrix is Metzler for strictly positive parameters. -/
+theorem pbpk_is_metzler {ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL : ℝ}
+    (hka : 0 < ka) (hQl : 0 < Ql) (hQp : 0 < Qp) (hQe : 0 < Qe)
+    (hVc : 0 < Vc) (hVl : 0 < Vl) (hVp : 0 < Vp) (hVe : 0 < Ve)
+    (hKpl : 0 < Kpl) (hKpp : 0 < Kpp) (hKpe : 0 < Kpe)
+    (hCL : 0 ≤ CL) :
+    IsMetzler (pbpkK ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL) := by
+  intro i j hij
+  fin_cases i <;> fin_cases j <;> simp_all [pbpkK] <;> positivity
+
+/-- Column sums vanish (closed system incl. elim accumulator). -/
+theorem pbpk_col_sums_eq_zero {ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL : ℝ}
+    (hVc : 0 < Vc) (hNe : Vc ≠ 0) :
+    ∀ j : Fin 6, ∑ i, pbpkK ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL i j = 0 := by
+  intro j
+  fin_cases j <;> simp [pbpkK, Fin.sum_univ_six] <;> ring
+
+/-- When CL = 0: alias kept for API stability. -/
+theorem pbpk_mass_conservation_zero_cl {ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe : ℝ}
+    (hVc : 0 < Vc) (hNe : Vc ≠ 0) :
+    ∀ j : Fin 6, ∑ i, pbpkK ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe 0 i j = 0 :=
+  pbpk_col_sums_eq_zero hVc hNe
+
+/-- Column sums are non-positive for CL ≥ 0 (in fact exactly zero). -/
+theorem pbpk_hasNonposColSums {ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL : ℝ}
+    (hVc : 0 < Vc) (hNe : Vc ≠ 0) :
+    HasNonposColSums (pbpkK ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL) := by
+  intro j
+  rw [pbpk_col_sums_eq_zero hVc hNe j]
+
+/-- Mass dissipation for CL ≥ 0: total-mass rate ≤ 0 (in fact = 0). -/
+theorem pbpk_mass_dissipation_positive_cl {ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL : ℝ}
+    (hka : 0 < ka) (hQl : 0 < Ql) (hQp : 0 < Qp) (hQe : 0 < Qe)
+    (hVc : 0 < Vc) (hVl : 0 < Vl) (hVp : 0 < Vp) (hVe : 0 < Ve)
+    (hKpl : 0 < Kpl) (hKpp : 0 < Kpp) (hKpe : 0 < Kpe)
+    (hCL : 0 ≤ CL) (hNe : Vc ≠ 0)
+    {y : Fin 6 → ℝ} (hy : NonNegVec y) :
+    totalMass (mulVec (pbpkK ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL) y) ≤ 0 :=
+  mass_dissipation_rate
+    (pbpk_is_metzler hka hQl hQp hQe hVc hVl hVp hVe hKpl hKpp hKpe hCL)
+    (pbpk_hasNonposColSums hVc hNe) hy
+
+end Compartmental
