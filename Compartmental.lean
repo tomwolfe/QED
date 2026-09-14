@@ -258,4 +258,72 @@ theorem pbpk_diag_neg (ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL : ℝ)
   · simp [pbpkK]; linarith
   · simp at hi
 
+/-- Forward-Euler step: (I + dt·K) y. -/
+noncomputable def fwdEuler (K : Fin 6 → Fin 6 → ℝ) (dt : ℝ) (y : Fin 6 → ℝ) :
+    Fin 6 → ℝ :=
+  fun i => y i + dt * ∑ j, K i j * y j
+
+/-- Forward-Euler stability: under the Metzler step bound every entry stays ≥ 0. -/
+theorem pbpk_forward_euler_nonneg
+    (ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL dt : ℝ)
+    (hka : 0 < ka) (hQl : 0 < Ql) (hQp : 0 < Qp) (hQe : 0 < Qe)
+    (hVc : 0 < Vc) (hVl : 0 < Vl) (hVp : 0 < Vp) (hVe : 0 < Ve)
+    (hKpl : 0 < Kpl) (hKpp : 0 < Kpp) (hKpe : 0 < Kpe)
+    (hCL : 0 ≤ CL) (hdt : 0 ≤ dt)
+    (hdtc : dt ≤ Vc / (Ql + Qp + Qe + CL))
+    (hdtg : dt ≤ 1 / ka)
+    (hdtl : dt ≤ Vl * Kpl / Ql)
+    (hdtp : dt ≤ Vp * Kpp / Qp)
+    (hdte : dt ≤ Ve * Kpe / Qe)
+    {y : Fin 6 → ℝ} (hy : NonNegVec y) :
+    NonNegVec (fwdEuler (pbpkK ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL) dt y) := by
+  have hQsum : 0 < Ql + Qp + Qe + CL := by linarith [hCL]
+  have e1 : 0 < Ql / (Vl * Kpl) := div_pos hQl (mul_pos hVl hKpl)
+  have e2 : 0 < Qp / (Vp * Kpp) := div_pos hQp (mul_pos hVp hKpp)
+  have e3 : 0 < Qe / (Ve * Kpe) := div_pos hQe (mul_pos hVe hKpe)
+  have e4 : 0 < (Ql + Qp + Qe) / Vc + CL / Vc := by positivity
+  have g1 : dt * ka ≤ 1 := by
+    rw [div_eq_mul_inv] at hdtg; calc dt * ka ≤ (1 / ka) * ka := by
+          apply mul_le_mul_of_nonneg_right hdtg (le_of_lt hka)
+      _ = 1 := by field_simp
+  have g2 : dt * (Ql / (Vl * Kpl)) ≤ 1 := by
+    have : dt ≤ (Vl * Kpl) / Ql := by linarith [hdtl]
+    calc dt * (Ql / (Vl * Kpl)) ≤ ((Vl * Kpl) / Ql) * (Ql / (Vl * Kpl)) := by
+          apply mul_le_mul_of_nonneg_right this (le_of_lt e1)
+      _ = 1 := by field_simp; ring
+  have g3 : dt * (Qp / (Vp * Kpp)) ≤ 1 := by
+    have : dt ≤ (Vp * Kpp) / Qp := by linarith [hdtp]
+    calc dt * (Qp / (Vp * Kpp)) ≤ ((Vp * Kpp) / Qp) * (Qp / (Vp * Kpp)) := by
+          apply mul_le_mul_of_nonneg_right this (le_of_lt e2)
+      _ = 1 := by field_simp; ring
+  have g4 : dt * (Qe / (Ve * Kpe)) ≤ 1 := by
+    have : dt ≤ (Ve * Kpe) / Qe := by linarith [hdte]
+    calc dt * (Qe / (Ve * Kpe)) ≤ ((Ve * Kpe) / Qe) * (Qe / (Ve * Kpe)) := by
+          apply mul_le_mul_of_nonneg_right this (le_of_lt e3)
+      _ = 1 := by field_simp; ring
+  have g0 : dt * ((Ql + Qp + Qe) / Vc + CL / Vc) ≤ 1 := by
+    have hsum2 : (Ql + Qp + Qe) / Vc + CL / Vc = (Ql + Qp + Qe + CL) / Vc := by ring
+    rw [hsum2]
+    calc dt * ((Ql + Qp + Qe + CL) / Vc) ≤ (Vc / (Ql + Qp + Qe + CL)) * ((Ql + Qp + Qe + CL) / Vc) := by
+          apply mul_le_mul_of_nonneg_right hdtc (by positivity)
+      _ = 1 := by field_simp
+  intro i
+  fin_cases i <;> simp [fwdEuler, pbpkK, Fin.sum_univ_six]
+    <;> (have y0 := hy 0; have y1 := hy 1; have y2 := hy 2; have y3 := hy 3; have y4 := hy 4; have y5 := hy 5)
+    <;> nlinarith [mul_nonneg hdt y0, mul_nonneg hdt y1, mul_nonneg hdt y2,
+        mul_nonneg hdt y3, mul_nonneg hdt y4, mul_nonneg hdt y5,
+        mul_nonneg (show 0 ≤ 1 - dt * ka by linarith) y0,
+        mul_nonneg (show 0 ≤ 1 - dt * (Ql / (Vl * Kpl)) by linarith) y1,
+        mul_nonneg (show 0 ≤ 1 - dt * ((Ql + Qp + Qe) / Vc + CL / Vc) by linarith) y2,
+        mul_nonneg (show 0 ≤ 1 - dt * (Qp / (Vp * Kpp)) by linarith) y3,
+        mul_nonneg (show 0 ≤ 1 - dt * (Qe / (Ve * Kpe)) by linarith) y4,
+        div_nonneg hCL (le_of_lt hVc), div_nonneg (le_of_lt hQl) (le_of_lt hVc)]
+
+/-- Elimination accumulator dissipates monotonically: ΔA_elim ≥ 0. -/
+theorem pbpk_elim_accumulator_nonneg
+    (CL Vc dt A_central : ℝ)
+    (hCL : 0 ≤ CL) (hVc : 0 < Vc) (hdt : 0 ≤ dt) (hA : 0 ≤ A_central) :
+    0 ≤ dt * (CL / Vc * A_central) :=
+  mul_nonneg hdt (mul_nonneg (div_nonneg hCL (le_of_lt hVc)) hA)
+
 end Compartmental
