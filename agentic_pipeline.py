@@ -135,21 +135,44 @@ class LeanAgenticPipeline:
     
     def _build_lake_env_lean_cmd(self) -> Optional[List[str]]:
         """If a Lake root is detected, return the command prefix for
-        ``lake env lean <file>`` so Lean resolves Mathlib imports."""
+        invoking Lean directly (bypassing ``lake env``).
+
+        NOTE: ``lake env`` SIGTRAP-crashes under some Lake/Lean version
+        combinations even though the toolchain's ``lean`` is healthy, so
+        we invoke the elan-shimmed ``lean`` directly (it resolves the
+        pinned toolchain via the lake root's ``lean-toolchain`` file) and
+        supply ``LEAN_PATH`` explicitly via :meth:`_compile_env`.
+        """
         if self._lake_root is None:
             return None
         elan_bin = str(Path.home() / ".elan" / "bin")
-        lake_bin = os.path.join(elan_bin, "lake")
-        if not os.path.isfile(lake_bin):
+        lean_bin = os.path.join(elan_bin, "lean")
+        if not os.path.isfile(lean_bin):
             return None
-        return [lake_bin, "env", "lean"]
+        return [lean_bin]
+
+    def _compile_env(self) -> dict:
+        """Environment for Lean invocations: explicit LEAN_PATH over the
+        Lake root's olean roots (project + all dependency packages)."""
+        env = os.environ.copy()
+        if self._lake_root is not None:
+            parts = [str(self._lake_root / ".lake" / "build" / "lib" / "lean")]
+            pkgs = self._lake_root / ".lake" / "packages"
+            if pkgs.is_dir():
+                for pkg in sorted(pkgs.iterdir()):
+                    cand = pkg / ".lake" / "build" / "lib" / "lean"
+                    if cand.is_dir():
+                        parts.append(str(cand))
+            prev = env.get("LEAN_PATH", "")
+            env["LEAN_PATH"] = os.pathsep.join(parts) + (os.pathsep + prev if prev else "")
+        return env
     
     def _compile_lean_cmd(self, lean_file: str) -> List[str]:
         """Return the full command list to compile *lean_file*.
-        
-        When a Lake root with ``lakefile.lean`` is detected, use
-        ``lake env lean <file>`` so that Mathlib imports resolve
-        through the hermetic Lake build graph.  Otherwise fall back
+
+        When a Lake root with ``lakefile.lean`` is detected, invoke the
+        elan-shimmed ``lean`` directly (bypassing crash-prone ``lake env``)
+        with ``LEAN_PATH`` from :meth:`_compile_env`.  Otherwise fall back
         to the bare ``lean`` executable.
         """
         if self._lake_env_lean is not None:
@@ -176,6 +199,7 @@ class LeanAgenticPipeline:
             compile_cmd = self._compile_lean_cmd(temp_path)
             
             try:
+                env = self._compile_env()
                 result = subprocess.run(
                     compile_cmd,
                     capture_output=True,
@@ -347,7 +371,7 @@ class LeanAgenticPipeline:
                 capture_output=True,
                 text=True,
                 timeout=30,
-                env=os.environ.copy()
+                env=self._compile_env()
             )
             
             output = result.stdout + result.stderr
@@ -821,7 +845,7 @@ class LeanAgenticPipeline:
                     capture_output=True,
                     text=True,
                     timeout=30,
-                    env=os.environ.copy()
+                    env=self._compile_env()
                 )
                 
                 # Check for sorry
@@ -939,7 +963,7 @@ class LeanAgenticPipeline:
                             result = subprocess.run(
                                 self._compile_lean_cmd(temp_path),
                                 capture_output=True, text=True,
-                                timeout=30, env=os.environ.copy(),
+                                timeout=30, env=self._compile_env(),
                             )
                             has_sorry, sorry_reason = self.check_for_sorry(
                                 lean_code, result.stdout + result.stderr,
