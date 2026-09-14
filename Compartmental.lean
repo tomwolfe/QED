@@ -217,4 +217,45 @@ theorem pbpk_mass_dissipation_positive_cl {ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe C
     (pbpk_is_metzler hka hQl hQp hQe hVc hVl hVp hVe hKpl hKpp hKpe hCL)
     (pbpk_hasNonposColSums hVc hNe) hy
 
+/-- Diagonal entries are non-positive for positive parameters.
+    NOTE: the literal `∀ i, K i i < 0` from the mission brief is FALSE:
+    the elim-accumulator diagonal (i = 5) is exactly 0 by construction
+    (elim only accumulates, never drains). We prove the sharp true form:
+    ≤ 0 for all i, and < 0 for i ≠ 5. -/
+theorem pbpk_diag_nonpos (ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL : ℝ)
+    (hka : 0 < ka) (hQl : 0 < Ql) (hQp : 0 < Qp) (hQe : 0 < Qe)
+    (hVc : 0 < Vc) (hVl : 0 < Vl) (hVp : 0 < Vp) (hVe : 0 < Ve)
+    (hKpl : 0 < Kpl) (hKpp : 0 < Kpp) (hKpe : 0 < Kpe) (hCL : 0 ≤ CL) :
+    ∀ i : Fin 6, pbpkK ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL i i ≤ 0 := by
+  have e1 : 0 < Ql / (Vl * Kpl) := div_pos hQl (mul_pos hVl hKpl)
+  have e2 : 0 < Qp / (Vp * Kpp) := div_pos hQp (mul_pos hVp hKpp)
+  have e3 : 0 < Qe / (Ve * Kpe) := div_pos hQe (mul_pos hVe hKpe)
+  have e4 : 0 < (Ql + Qp + Qe) / Vc := div_pos (by linarith) hVc
+  have e5 : 0 ≤ CL / Vc := div_nonneg hCL (le_of_lt hVc)
+  have key : (-Qe + (-Qp + -Ql)) / Vc = -((Ql + Qp + Qe) / Vc) := by ring
+  intro i
+  fin_cases i <;> simp [pbpkK] <;> linarith
+
+/-- Strict negativity on the five draining compartments (all but elim). -/
+theorem pbpk_diag_neg (ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL : ℝ)
+    (hka : 0 < ka) (hQl : 0 < Ql) (hQp : 0 < Qp) (hQe : 0 < Qe)
+    (hVc : 0 < Vc) (hVl : 0 < Vl) (hVp : 0 < Vp) (hVe : 0 < Ve)
+    (hKpl : 0 < Kpl) (hKpp : 0 < Kpp) (hKpe : 0 < Kpe) (hCL : 0 ≤ CL) :
+    ∀ i : Fin 6, i ≠ 5 →
+      pbpkK ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL i i < 0 := by
+  have e1 : 0 < Ql / (Vl * Kpl) := div_pos hQl (mul_pos hVl hKpl)
+  have e2 : 0 < Qp / (Vp * Kpp) := div_pos hQp (mul_pos hVp hKpp)
+  have e3 : 0 < Qe / (Ve * Kpe) := div_pos hQe (mul_pos hVe hKpe)
+  have e4 : 0 < (Ql + Qp + Qe) / Vc := div_pos (by linarith) hVc
+  have e5 : 0 ≤ CL / Vc := div_nonneg hCL (le_of_lt hVc)
+  have key : (-Qe + (-Qp + -Ql)) / Vc = -((Ql + Qp + Qe) / Vc) := by ring
+  intro i hi
+  fin_cases i
+  · simp [pbpkK]; linarith
+  · simp [pbpkK]; linarith
+  · simp [pbpkK]; linarith
+  · simp [pbpkK]; linarith
+  · simp [pbpkK]; linarith
+  · simp at hi
+
 end Compartmental

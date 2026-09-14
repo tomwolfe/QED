@@ -8,5 +8,11 @@ package QED where
 lean_lib QED where
   srcDir := "."
 
+lean_lib Compartmental where
+  srcDir := "."
+
+lean_lib VeriTrialExport where
+  srcDir := "."
+
 require mathlib from git
   "https://github.com/leanprover-community/mathlib4" @ "master"
