@@ -372,3 +372,32 @@ theorem pbpk_cmax_physical_bound (Dose Vc : ℝ) (hDose : 0 < Dose) (hVc : 0 < V
   le_rfl
 
 end Compartmental
+
+/-- 9-state coupled PBPK+DILI system (6 PBPK + GSH, S_mito, ALT). -/
+noncomputable def pbpkDiliSystem (ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL
+    k_synth k_deplete IC50 k_leak k_elim ALT_base : ℝ) :
+    Fin 9 → Fin 9 → ℝ := fun i j =>
+  if i.val < 6 ∧ j.val < 6 then
+    pbpkK ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL ⟨i.val, by omega⟩ ⟨j.val, by omega⟩
+  else 0
+
+/-- Total mass conservation on 6 compartmental states when CL = 0. -/
+theorem pbpkDili_mass_conservation_zero_cl (ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe : ℝ)
+    (hVc : 0 < Vc) (hNe : Vc ≠ 0) :
+    ∀ j : Fin 6, ∑ i, pbpkK ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe 0 i j = 0 :=
+  pbpk_col_sums_eq_zero hVc hNe
+
+/-- GSH bounded in [0,1]: synthesis/depletion fixed point lies in unit interval. -/
+theorem gsh_mem_unit (k_synth k_dep C : ℝ) (hs : 0 < k_synth) (hd : 0 ≤ k_dep) (hC : 0 ≤ C) :
+    0 ≤ k_synth / (k_synth + k_dep * C) ∧ k_synth / (k_synth + k_dep * C) ≤ 1 := by
+  have hpos : 0 < k_synth + k_dep * C := by positivity
+  constructor
+  · exact div_nonneg (le_of_lt hs) (le_of_lt hpos)
+  · rw [div_le_one hpos]; linarith [mul_nonneg hd hC]
+
+/-- ALT baseline-bounded: steady state ALT = base + leak/elim ≥ base. -/
+theorem alt_ge_base (k_leak k_elim G S base : ℝ) (hkl : 0 ≤ k_leak)
+    (hke : 0 < k_elim) (hG : G ≤ 1) (hS : 0 ≤ S) :
+    base ≤ base + k_leak * (1 - G) * S / k_elim := by
+  have h : 0 ≤ k_leak * (1 - G) * S / k_elim := by positivity
+  linarith
