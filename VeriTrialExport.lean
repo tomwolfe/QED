@@ -45,7 +45,7 @@ theorem veritrial_dili_matches_pbpkDiliSystem
       k_synth k_deplete IC50 k_leak k_elim ALT_base := by
   ext i j
   by_cases h : i.val < 6 ∧ j.val < 6
-  · simp only [extracted_dili_matrix, pbpkDiliSystem, dif_pos h]
+  · simp only [extracted_dili_matrix, pbpkDiliSystem, dite_eq_left h]
     have H := veritrial_model_matches_pbpkK ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL
     exact congr_fun (congr_fun H ⟨i.val, by omega⟩) ⟨j.val, by omega⟩
-  · simp only [extracted_dili_matrix, pbpkDiliSystem, dif_neg h]
+  · simp only [extracted_dili_matrix, pbpkDiliSystem, dite_eq_right h]
