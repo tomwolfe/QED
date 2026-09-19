@@ -38,6 +38,11 @@ def main(argv: list[str] | None = None) -> int:
                     help="file of lemmas, one per line")
     ap.add_argument("--python", default=sys.executable,
                     help="python interpreter to invoke QED with")
+    ap.add_argument("--adapter", default=None,
+                    help="adapter name forwarded to agentic_pipeline.py")
+    ap.add_argument("--adapters-config", default=None,
+                    help="tether config path forwarded to agentic_pipeline.py")
+    ap.add_argument("--max-iterations", type=int, default=15)
     args = ap.parse_args(argv)
 
     if not args.lemmas.is_file():
@@ -62,8 +67,14 @@ def main(argv: list[str] | None = None) -> int:
             skipped += 1
             print(f"skipped (Mathlib required): {lemma}")
             continue
+        cmd = [args.python, str(QED_DIR / "agentic_pipeline.py"), lemma,
+               "--max-iterations", str(args.max_iterations)]
+        if args.adapter:
+            cmd += ["--adapter", args.adapter]
+            if args.adapters_config:
+                cmd += ["--adapters-config", args.adapters_config]
         proc = subprocess.run(
-            [args.python, str(QED_DIR / "agentic_pipeline.py"), lemma],
+            cmd,
             cwd=str(QED_DIR),
             capture_output=True,
             text=True,

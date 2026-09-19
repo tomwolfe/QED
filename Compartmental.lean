@@ -373,11 +373,13 @@ theorem pbpk_cmax_physical_bound (Dose Vc : ℝ) (hDose : 0 < Dose) (hVc : 0 < V
 
 end Compartmental
 
+namespace Compartmental
+
 /-- 9-state coupled PBPK+DILI system (6 PBPK + GSH, S_mito, ALT). -/
 noncomputable def pbpkDiliSystem (ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL
     k_synth k_deplete IC50 k_leak k_elim ALT_base : ℝ) :
     Fin 9 → Fin 9 → ℝ := fun i j =>
-  if i.val < 6 ∧ j.val < 6 then
+  if h : i.val < 6 ∧ j.val < 6 then
     pbpkK ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL ⟨i.val, by omega⟩ ⟨j.val, by omega⟩
   else 0
 
@@ -401,3 +403,5 @@ theorem alt_ge_base (k_leak k_elim G S base : ℝ) (hkl : 0 ≤ k_leak)
     base ≤ base + k_leak * (1 - G) * S / k_elim := by
   have h : 0 ≤ k_leak * (1 - G) * S / k_elim := by positivity
   linarith
+
+end Compartmental

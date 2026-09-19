@@ -1166,7 +1166,7 @@ def test_generate_lean_code_real_field_r() -> None:
         "Q * (C_p - C_tissue / Kp) = Q * C_p - Q * C_tissue / Kp",
         ["Q", "C_p", "C_tissue", "Kp"],
     )
-    assert "[Field ℝ]" in code
+    assert "[Field ℝ]" not in code  # canonical Real instances: variable [Field ℝ] shadows them and blocks ring/field_simp
     assert "ℝ" in code
     assert "import Mathlib" in code
 
@@ -1217,7 +1217,7 @@ def test_symbolic_mass_balance_real_typed() -> None:
     # Mass-balance: sum of perfusion rates equals zero (symbolic)
     expr = "Q * C_p - Q * C_tissue / Kp + Q * C_liver / Kp = 0"
     code = pipeline.generate_lean_code(expr, ["Q", "C_p", "C_tissue", "Kp", "C_liver"])
-    assert "[Field ℝ]" in code
+    assert "[Field ℝ]" not in code  # canonical Real instances: variable [Field ℝ] shadows them and blocks ring/field_simp
     assert "ℝ" in code
     # Must not contain sorry
     assert "sorry" not in code
@@ -1279,7 +1279,7 @@ def test_parametric_lean_code_haspositivity_hypotheses() -> None:
         "Q * (C_p - C_tissue / Kp) = Q * C_p - Q * C_tissue / Kp",
         ["Q", "C_p", "C_tissue", "Kp"],
     )
-    assert "[Field ℝ]" in code
+    assert "[Field ℝ]" not in code  # canonical Real instances: variable [Field ℝ] shadows them and blocks ring/field_simp
     assert "(hKp : 0 < Kp)" in code
     assert "sorry" not in code
 
@@ -1317,7 +1317,7 @@ def test_parametric_mass_balance_with_hypotheses() -> None:
     pipeline = LeanAgenticPipeline(use_mathlib=True)
     expr = "-ka * Ag + Q * (Cp - Ct / Kp) + ka * Ag - Q * (Cp - Ct / Kp) - CL * Cp + CL * Cp = 0"
     code = pipeline.generate_lean_code(expr, ["ka", "Ag", "Q", "Cp", "Ct", "Kp", "CL"])
-    assert "[Field ℝ]" in code
+    assert "[Field ℝ]" not in code  # canonical Real instances: variable [Field ℝ] shadows them and blocks ring/field_simp
     assert "(hKp : 0 < Kp)" in code
     assert "sorry" not in code
 
@@ -1494,7 +1494,7 @@ def test_parametric_metzler_positivity_compound_tactic_proves() -> None:
         result = subprocess.run(
             pipeline._compile_lean_cmd(temp_path),
             capture_output=True, text=True, timeout=30,
-            env=os.environ.copy(),
+            env=pipeline._compile_env(),
         )
         has_sorry, _ = pipeline.check_for_sorry(lean_code, result.stdout + result.stderr)
         if pipeline.use_mathlib:
@@ -1800,3 +1800,69 @@ def test_agentic_adapter_called_on_failure(monkeypatch: Any) -> None:
     # Adapter should have been called because static tactics exhausted
     assert len(adapter.calls) >= 1
     assert "⊢ 0 < 1" in adapter.calls[0]
+
+
+def test_adapter_repair_e2e_mocked() -> None:
+    """End-to-end adapter repair: static candidates fail -> adapter queried
+    via _construct_repair_prompt -> _parse_adapter_tactic response compiled
+    and verified against #print axioms."""
+    from agentic_pipeline import LeanAgenticPipeline
+
+    class FakeState:
+        logs = "```lean\nring\n```"
+
+    class FakeAdapter:
+        def __init__(self):
+            self.prompts: list[str] = []
+
+        def send(self, prompt, session):
+            self.prompts.append(prompt)
+            return FakeState()
+
+    pipeline = LeanAgenticPipeline(adapter=FakeAdapter())
+    # Force static candidates to fail by pointing at a bogus lean binary
+    pipeline.lean_path = "/nonexistent-lean"
+    pipeline._lake_env_lean = None
+    pipeline._lake_root = None
+    pipeline.use_mathlib = False
+
+    import subprocess as _sp
+
+    real_run = _sp.run
+    calls = {"n": 0}
+
+    class R:
+        def __init__(self, rc, out="", err=""):
+            self.returncode = rc
+            self.stdout = out
+            self.stderr = err
+
+    def fake_run(cmd, **kw):
+        calls["n"] += 1
+        text = ""
+        try:
+            f = [a for a in (cmd if isinstance(cmd, list) else []) if str(a).endswith(".lean")]
+            if f:
+                text = open(f[0]).read()
+        except Exception:
+            text = ""
+        if "[adapter]" in text or "ring" in text and calls["n"] > 3:
+            return R(0, "", "")
+        # static attempts: fail with a goal-bearing error
+        return R(1, "", "error: unsolved goals\n⊢ a + b = b + a\n")
+
+    _sp.run = fake_run  # type: ignore
+    try:
+        # unit-level: prompt + parse
+        prompt = pipeline._construct_repair_prompt(
+            "a + b = b + a", "theorem qed_goal : a + b = b + a := by\n",
+            "unsolved goals", "a + b = b + a")
+        assert "⊢" in prompt or "goal" in prompt.lower()
+        tactic = pipeline._parse_adapter_tactic(FakeState.logs)
+        assert tactic == "ring"
+        # full loop with tiny budget so static phase exhausts fast
+        res = pipeline.execute_tactic_loop("a + b = b + a", max_iterations=1)
+        assert any("[adapter]" in a.get("tactic", "") for a in res["attempts"])
+        assert pipeline.adapter.prompts, "adapter must have been queried"
+    finally:
+        _sp.run = real_run  # type: ignore

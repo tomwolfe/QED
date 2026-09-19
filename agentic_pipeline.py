@@ -747,7 +747,7 @@ class LeanAgenticPipeline:
                         )
                     else:
                         theorem = (
-                            f"theorem qed_goal [Field ℝ] {params} {all_hyps} "
+                            f"theorem qed_goal {params} {all_hyps} "
                             f": {expression} := by\n"
                         )
                 else:
@@ -758,9 +758,9 @@ class LeanAgenticPipeline:
                             f": {expression} := by\n"
                         )
                     else:
-                        theorem = f"theorem qed_goal [Field ℝ] {params} : {expression} := by\n"
+                        theorem = f"theorem qed_goal {params} : {expression} := by\n"
             else:
-                theorem = f"theorem qed_goal [Field ℝ] : {expression} := by\n"
+                theorem = f"theorem qed_goal : {expression} := by\n"
         else:
             # Build theorem statement
             if filtered_vars:
@@ -1038,7 +1038,7 @@ class LeanAgenticPipeline:
         expression = match.group(1)
         return self.execute_tactic_loop(expression, max_iterations)
     
-    def run(self, latex_input: str) -> Dict[str, Any]:
+    def run(self, latex_input: str, max_iterations: int = 15) -> Dict[str, Any]:
         """
         Run the full pipeline on mathematical input.
         
@@ -1048,19 +1048,43 @@ class LeanAgenticPipeline:
         Returns:
             Dictionary with results
         """
-        return self.execute_tactic_loop(latex_input)
+        return self.execute_tactic_loop(latex_input, max_iterations)
 
 
 def main() -> None:
     """CLI entry point."""
-    if len(sys.argv) < 2:
-        print("Usage: python3 agentic_pipeline.py <mathematical_expression>")
+    import argparse as _ap
+    ap = _ap.ArgumentParser(description="Lean 4 agentic pipeline")
+    ap.add_argument("expression", nargs="?", default=None,
+                    help="mathematical expression")
+    ap.add_argument("--adapter", default=None,
+                    help="adapter name to resolve for agentic repair")
+    ap.add_argument("--adapters-config", default=None,
+                    help="path to tether config for adapter resolution")
+    ap.add_argument("--max-iterations", type=int, default=15,
+                    help="iteration limit")
+    args = ap.parse_args()
+
+    if not args.expression:
+        print("Usage: python3 agentic_pipeline.py <mathematical_expression> [--adapter NAME ...]")
         sys.exit(1)
+
+    expression = args.expression
+    adapter = None
+    if args.adapter:
+        try:
+            from tether.adapters import resolve_adapter  # type: ignore
+            adapter = resolve_adapter(
+                args.adapter,
+                config_path=args.adapters_config) if args.adapters_config else resolve_adapter(args.adapter)
+        except Exception as e:
+            print(f"adapter resolution failed: {e}", file=sys.stderr)
+            sys.exit(1)
+    pipeline = LeanAgenticPipeline(adapter=adapter)
     
-    expression = sys.argv[1]
-    pipeline = LeanAgenticPipeline()
-    
-    result = pipeline.run(expression)
+    result = pipeline.run(expression, max_iterations=args.max_iterations)
+    # NOTE: run() uses default iteration budget; honor --max-iterations:
+    # re-run via execute_tactic_loop when non-default requested.
     
     if result['success']:
         print("✓ Verification Successful! (no sorry)")

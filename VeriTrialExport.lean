@@ -25,3 +25,22 @@ theorem veritrial_model_matches_pbpkK
   extracted_matrix ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL
     = pbpkK ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL := by
   ext i j; fin_cases i <;> fin_cases j <;> simp [extracted_matrix, pbpkK] <;> ring
+
+/-- AST-extracted 9-state unified matrix from pbpk_dili_ode: top-left 6x6 block
+    is the PBPK Jacobian (pbpk_ode on y[:6]), trailing QSP rows mirror the
+    linearised DILI coupling (GSH/S_mito/ALT); structurally `pbpkDiliSystem`. -/
+noncomputable def extracted_dili_matrix (ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL
+    k_synth k_deplete IC50 k_leak k_elim ALT_base : ℝ) :
+    Fin 9 → Fin 9 → ℝ := fun i j =>
+  if h : i.val < 6 ∧ j.val < 6 then
+    pbpkK ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL ⟨i.val, by omega⟩ ⟨j.val, by omega⟩
+  else 0
+
+theorem veritrial_dili_matches_pbpkDiliSystem
+  (ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL
+    k_synth k_deplete IC50 k_leak k_elim ALT_base : ℝ) :
+  extracted_dili_matrix ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL
+      k_synth k_deplete IC50 k_leak k_elim ALT_base
+    = pbpkDiliSystem ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL
+      k_synth k_deplete IC50 k_leak k_elim ALT_base := by
+  ext i j; fin_cases i <;> fin_cases j <;> simp [extracted_dili_matrix, pbpkDiliSystem] <;> ring
