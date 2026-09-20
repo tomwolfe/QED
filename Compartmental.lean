@@ -371,6 +371,29 @@ theorem pbpk_cmax_physical_bound (Dose Vc : ℝ) (hDose : 0 < Dose) (hVc : 0 < V
     Dose / Vc ≤ Dose / Vc :=
   le_rfl
 
+/-- Discrete impulsive bolus administration: add dose to gut (index 0). -/
+def bolusDose (y : Fin 6 → ℝ) (dose : ℝ) : Fin 6 → ℝ :=
+  fun i => if i.val = 0 then y i + dose else y i
+
+/-- Bolus administration preserves state non-negativity. -/
+theorem pbpk_bolus_nonneg {y : Fin 6 → ℝ} (hy : NonNegVec y) {dose : ℝ} (hdose : 0 ≤ dose) :
+    NonNegVec (bolusDose y dose) := by
+  intro i
+  unfold bolusDose
+  by_cases h : i.val = 0
+  · simp [h]; exact add_nonneg (hy i) hdose
+  · simp [h]; exact hy i
+
+/-- Total mass updates additively under bolus administration. -/
+theorem pbpk_bolus_mass {y : Fin 6 → ℝ} (dose : ℝ) :
+    totalMass (bolusDose y dose) = totalMass y + dose := by
+  unfold totalMass bolusDose
+  have h0 : (⟨0, by omega⟩ : Fin 6) ∈ (Finset.univ : Finset (Fin 6)) :=
+    Finset.mem_univ _
+  -- Split sum at index 0 via add + sum of rest is messy; use Fin.sum_univ_six
+  simp [Fin.sum_univ_six]
+  ring
+
 end Compartmental
 
 namespace Compartmental
