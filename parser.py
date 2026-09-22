@@ -110,9 +110,9 @@ class ODE(ASTNode):
     """Ordinary differential equation node: d<var>/dt = <rhs>.
 
     Represents a time derivative statement where ``var`` is the name of the
-    differentiated quantity (e.g. ``A_gut``) and ``rhs`` is the AST of the
+    differentiated quantity (e.g. ``A_1``) and ``rhs`` is the AST of the
     right-hand side expression. This is the canonical form produced when
-    parsing perfusion-limited PBPK ODEs such as ``dA_gut/dt = -ka * A_gut``.
+    parsing ODEs such as ``dA_1/dt = -k * A_1``.
     """
 
     def __init__(self, var: str, rhs: ASTNode) -> None:
@@ -352,7 +352,7 @@ def parse_ode(expression: str) -> Tuple[Optional[ODE], Optional[List[str]]]:
         (ODE node, list of free variable names in the RHS) when the input
         matches the ODE pattern, otherwise ``(None, None)``.
 
-    The differentiated variable name (e.g. ``A_gut``) is recorded verbatim as
+    The differentiated variable name (e.g. ``A_1``) is recorded verbatim as
     ``ode.var``; the right-hand side is parsed into an AST suitable for Lean
     translation via the standard expression parser.
     """
@@ -380,7 +380,7 @@ def is_ode(expression: str) -> bool:
 
 def involves_derivative(expression: str) -> bool:
     """Return True if ``expression`` mentions a time-derivative / rate-of-change
-    term such as ``dX/dt`` or ``dA_liver/dt`` anywhere in the string.
+    term such as ``dX/dt`` anywhere in the string.
 
     This is used by the agentic pipeline to recognize formal-ODE inputs (not
     just the canonical ``d<var>/dt = <rhs>`` head form) so it can prioritize
@@ -517,10 +517,9 @@ def has_rational_structure(node: Optional[ASTNode]) -> bool:
     is *not* a pure numeric literal – i.e. the division is symbolic and
     therefore lives in a field (``ℝ``) rather than ``ℕ`` or ``ℤ``.
 
-    Also detects Michaelis-Menten patterns: ``Vmax * C / (Km + C)`` where
-    the denominator is a sum containing a symbolic variable.  This is the
-    canonical enzyme-kinetics form that requires ``Real`` typing and
-    Mathlib's ``field_simp``/``ring`` tactics.
+    Also detects rational patterns of the form ``Vmax * C / (Km + C)`` where
+    the denominator is a sum containing a symbolic variable, which
+    requires ``Real`` typing and ``field_simp``/``ring`` tactics.
 
     This is used by the agentic pipeline to decide whether the expression
     requires ``Real`` typing and Mathlib's ``field_simp``/``ring`` tactics.
@@ -564,17 +563,13 @@ def extract_positivity_hypotheses(node: Optional[ASTNode]) -> List[str]:
     div_vars = find_division_variables(node)
     return [f'(h{v} : 0 < {v})' for v in sorted(div_vars)]
 
-def has_compartmental_structure(node: Optional[ASTNode]) -> bool:
-    """Detect PBPK compartmental flow patterns in the AST.
+def has_flow_gradient_structure(node: Optional[ASTNode]) -> bool:
+    """Detect generic flow-gradient patterns in the AST.
 
-    Returns True when the expression contains the characteristic perfusion-
-    limited compartment structure ``Q * (C_p - C_tissue / Kp)`` where a
-    flow rate ``Q`` multiplies a concentration gradient involving division
-    by a tissue partition coefficient ``Kp``.
-
-    This is used by the agentic pipeline to classify VeriTrial PBPK
-    mass-conservation lemmas and route them through the Real-typed
-    parametric proof path.
+    Returns True when the expression contains the structure
+    ``Q * (C_a - C_b / K)`` where a rate ``Q`` multiplies a gradient
+    involving division by a coefficient ``K``. Purely structural;
+    no domain meaning is attached.
     """
     if node is None:
         return False
@@ -597,12 +592,14 @@ def has_compartmental_structure(node: Optional[ASTNode]) -> bool:
         return False
     return _walk(node)
 
-def is_metzler_positivity(node: Optional[ASTNode]) -> bool:
-    """Jacobian off-diagonal positivity: ``Q / (V * Kp) > 0`` or ``Q / Kp > 0``.
+# Backward-compatible alias (generic name preferred).
+has_compartmental_structure = has_flow_gradient_structure
 
-    Returns True when the node is a strict inequality (Gt/Lt, either
-    orientation) whose positive side is a division of ``Q`` by a ``Kp``
-    (optionally via ``V * Kp``) term.
+def is_positivity(node: Optional[ASTNode]) -> bool:
+    """Strict positivity: ``E > 0`` (or ``0 < E``) where E is a division.
+
+    Generic structural check: a Gt/Lt node with zero on one side and a
+    division expression on the other. Proves via ``positivity``.
     """
     if node is None:
         return False
@@ -614,25 +611,16 @@ def is_metzler_positivity(node: Optional[ASTNode]) -> bool:
         return False
     if not (isinstance(rhs, Num) and rhs.value == 0):
         return False
-    if not (isinstance(lhs, BinOp) and lhs.op == '/'):
-        return False
-    num_vars: set[str] = set()
-    _collect_vars(lhs.left, num_vars)
-    den_vars: set[str] = set()
-    _collect_vars(lhs.right, den_vars)
-    if 'Q' not in num_vars:
-        return False
-    return 'Kp' in den_vars
+    return isinstance(lhs, BinOp) and lhs.op == '/'
 
-def is_boundary_flow_positivity(node: Optional[ASTNode]) -> bool:
-    """Compartmental boundary inflow: ``(Q / (V * Kp)) * A >= 0`` or similar.
+# Backward-compatible alias (generic name preferred).
+is_metzler_positivity = is_positivity
 
-    Returns True when the node is a non-strict inequality (Ge/Le, either
-    orientation with 0 on one side) whose non-zero side is a product
-    containing a division of ``Q`` by ``V * Kp`` (or ``V * Kp`` alone)
-    multiplied by a state variable ``A``.  This represents the
-    non-negativity of perfusion inflow into a compartment when the
-    source amount is non-negative.
+def is_nonneg_product(node: Optional[ASTNode]) -> bool:
+    """Non-negative product: ``E >= 0`` where E is a product with division.
+
+    Generic structural check: a Ge/Le node with zero on one side whose
+    other side is a product containing a division node.
     """
     if node is None:
         return False
@@ -644,19 +632,53 @@ def is_boundary_flow_positivity(node: Optional[ASTNode]) -> bool:
         return False
     if not (isinstance(rhs, Num) and rhs.value == 0):
         return False
-    # lhs should be a product: (Q / (V * Kp)) * A  or  Q * A / (V * Kp)
     if not isinstance(lhs, BinOp):
         return False
-    all_vars: set[str] = set()
-    _collect_vars(lhs, all_vars)
-    # Must contain the PBPK signature variables
-    if 'Q' not in all_vars:
-        return False
-    if not any(v.startswith('Kp') or v.startswith('V_') or v == 'V'
-               for v in all_vars):
-        return False
-    # Must contain a division node (the Q / ... pattern)
     return contains_op(lhs, '/')
+
+# Backward-compatible alias (generic name preferred).
+is_boundary_flow_positivity = is_nonneg_product
+
+def is_linear_conservation(node: Optional[ASTNode]) -> bool:
+    """LinearConservation: a linear sum equating to 0 (sum c_i x_i = 0).
+
+    Generic structural check: an Eq node whose right side is numeric zero
+    and whose left side is built only from +,-,*,/,negation over
+    variables and numerals (no comparisons, no powers of relations).
+    """
+    if not isinstance(node, Eq):
+        return False
+    if not (isinstance(node.right, Num) and node.right.value == 0):
+        return False
+    def _linear(n: Optional[ASTNode]) -> bool:
+        if n is None:
+            return False
+        if isinstance(n, (Num, Var)):
+            return True
+        if isinstance(n, Neg):
+            return _linear(n.expr)
+        if isinstance(n, BinOp) and n.op in ('+', '-', '*', '/'):
+            return _linear(n.left) and _linear(n.right)
+        return False
+    return _linear(node.left)
+
+def is_matrix_entry_equality(node: Optional[ASTNode]) -> bool:
+    """MatrixEntryEquality: element-wise matrix identity verification.
+
+    Generic structural check on the source string level is done by callers;
+    at AST level this detects equalities whose both sides share the same
+    free-variable support (same symbols on both sides), the signature of
+    an entry-wise identity between two matrix expressions.
+    """
+    if not isinstance(node, Eq):
+        return False
+    lv: set[str] = set()
+    rv: set[str] = set()
+    _collect_vars(node.left, lv)
+    _collect_vars(node.right, rv)
+    if not lv or not rv:
+        return False
+    return len(lv & rv) > 0
 
 def is_discrete_step_conservation(node: Optional[ASTNode]) -> bool:
     """Discrete-step conservation: ``sum(y_i + dt * f_i) = sum(y_i) + dt * sum(f_i)``.
@@ -776,7 +798,7 @@ def is_numeric_equality(latex: str) -> bool:
 
     Both sides must reduce to concrete integers/floats so that ``decide``/``simp``
     can prove the equality without assuming any variables. This is the class of
-    lemmas the PBPK bridge emits (e.g. ``-6 + 9 + -13 + 4 + 6 + 0 = 0``).
+    lemmas the model bridge emits (e.g. ``-6 + 9 + -13 + 4 + 6 + 0 = 0``).
     """
     eq, free_vars = parse_equation(latex)
     if eq is None or not isinstance(eq, Eq):

@@ -45,7 +45,7 @@ def _collect_division_numerator_vars(node: object, result: set[str]) -> None:
 
     ``find_division_variables`` only collects denominator variables, but
     Mathlib's ``positivity`` tactic also needs the numerator to be positive
-    (e.g. ``Q / Kp > 0`` requires ``Q > 0`` and ``Kp > 0``).  This
+    (e.g. ``E / F > 0`` requires ``E > 0`` and ``F > 0``).  This
     function walks the AST and adds numerator variables from ``/`` nodes
     to *result* in-place.
     """
@@ -489,7 +489,7 @@ class LeanAgenticPipeline:
         # ODE / rate-of-change inputs: prioritize the Mathlib tactics that
         # handle derivatives, division and algebraic structure in the RHS.
         # ``dsimp`` normalizes the derivative head, ``field_simp`` clears the
-        # divisions (C_p = A/V, C_tissue/Kp), and ``ring_nf`` closes the
+        # divisions (C_a = A/V_a, C_b/K), and ``ring_nf`` closes the
         # resulting polynomial/field identities. This is the bridge from
         # "algebraic identity checking" to genuine formal-ODE verification.
         # Compound tactics chain multiple steps in one tactic block.
@@ -516,12 +516,12 @@ class LeanAgenticPipeline:
             ast_node, _ = parse_expression(tokens)
         
         # Dynamical invariants: Jacobian off-diagonal (Metzler) positivity
-        # ``Q / Kp > 0`` / ``Q / (V * Kp) > 0`` proves via ``positivity``;
+        # ``E / F > 0`` proves via ``positivity``;
         # discrete-step conservation proves via ``field_simp; ring``.
         try:
-            from parser import is_metzler_positivity as _is_metz, \
+            from parser import is_positivity as _is_metz, \
                 is_discrete_step_conservation as _is_step, \
-                is_boundary_flow_positivity as _is_bflow
+                is_nonneg_product as _is_bflow
         except ImportError:
             _is_metz = _is_step = _is_bflow = None  # type: ignore[assignment]
         if _is_metz is not None and _is_metz(ast_node):
@@ -539,7 +539,7 @@ class LeanAgenticPipeline:
                     candidates.append(tactic)
             return candidates
         if _is_bflow is not None and _is_bflow(ast_node):
-            # Boundary flow positivity: (Q / (V * Kp)) * A >= 0
+            # Boundary inflow non-negativity: (E / F) * A >= 0
             # Proved by positivity (all factors non-negative) or
             # field_simp + linarith (linear combination of non-neg terms).
             candidates.extend([
@@ -644,7 +644,7 @@ class LeanAgenticPipeline:
         if has_polynomial_structure(goal_ast) or 'ring' in goal.lower():
             return 'ring'
 
-        # Formal-ODE goals: derivatives with division (C_p = A/V, C_tissue/Kp)
+        # Formal-ODE goals: derivatives with division (C_a = A/V_a, C_b/K)
         # are field identities; clear the divisions with field_simp first,
         # then let ring close them.
         if involves_derivative(goal) or contains_op(goal_ast, '/'):
@@ -699,7 +699,7 @@ class LeanAgenticPipeline:
             eq_node, _ = parse_equation(expression)
             div_vars = find_division_variables(eq_node) if eq_node else set()
             # Also collect numerator variables from division nodes for
-            # positivity (Q / Kp > 0 needs both Q > 0 and Kp > 0).
+            # positivity (E / F > 0 needs both E > 0 and F > 0).
             if eq_node:
                 _collect_division_numerator_vars(eq_node, div_vars)
             hyp_vars = sorted(div_vars & set(filtered_vars)) if div_vars else []

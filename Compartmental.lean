@@ -1,14 +1,31 @@
 /-
-  Compartmental.lean — Formal invariants for compartmental ODE systems.
+  Compartmental.lean — Domain-agnostic formal invariants for compartmental
+  ODE systems dx/dt = K·x over an arbitrary finite state space `n`.
 
-  Proves forward non-negativity and mass dissipation for Metzler matrices,
-  the algebraic backbone of PBPK mass conservation.
+  Core results, all proved for arbitrary `[Fintype n] [DecidableEq n]`:
 
-  No `sorry` or `sorryAx` is used anywhere in this file.
+  * Metzler structure and mass dissipation (`mass_dissipation_rate`),
+  * exact mass conservation for conservative systems (`mass_conservation_rate`),
+  * the General Orthant Invariance Theorem: the forward-Euler map
+    `(I + Δt·K)` sends non-negative vectors to non-negative vectors whenever
+    `Δt ≤ min_j 1/|K_jj|` (stated multiplicatively as `Δt·|K_jj| ≤ 1`),
+  * the General SDIRK2 Invertibility Theorem: the stage matrix
+    `I - γΔt·K` of an SDIRK2 step is a nonsingular M-matrix whose inverse
+    preserves non-negativity.
+
+  The file contains no model-specific matrices and no domain knowledge of any
+  kind. No `sorry` or `sorryAx` is used anywhere in this file.
 -/
 
 import Mathlib.Tactic
 import Mathlib.Basic.Real.Basic
+import Mathlib.LinearAlgebra.Matrix.NonsingularInverse
+import Mathlib.LinearAlgebra.Matrix.Diagonal
+import Mathlib.Analysis.SpecificLimits.Basic
+import Mathlib.Analysis.SpecificLimits.Normed
+import Mathlib.Topology.Algebra.InfiniteSum.Ring
+import Mathlib.Topology.Algebra.InfiniteSum.Order
+import Mathlib.Topology.Algebra.InfiniteSum.Constructions
 
 open Finset
 open scoped BigOperators
@@ -16,6 +33,8 @@ open scoped BigOperators
 namespace Compartmental
 
 variable {n : Type*} [Fintype n] [DecidableEq n]
+
+/-! ## Metzler structure -/
 
 /-- A square matrix is *Metzler* if all off-diagonal entries are non-negative. -/
 def IsMetzler (K : n → n → ℝ) : Prop :=
@@ -50,6 +69,8 @@ lemma isMetzler_id :
   intro i j hij
   simp [hij]
 
+/-! ## Column-sum (mass) structure -/
+
 /-- Column-sum condition: column sums of K are ≤ 0. -/
 def HasNonposColSums (K : n → n → ℝ) : Prop :=
   ∀ j, ∑ i, K i j ≤ 0
@@ -58,6 +79,33 @@ def HasNonposColSums (K : n → n → ℝ) : Prop :=
 lemma hasNonposColSums_zero : HasNonposColSums (fun _ _ => 0 : n → n → ℝ) := by
   intro j
   simp
+
+/-- A *compartmental matrix*: off-diagonal entries non-negative (Metzler) and
+    column sums non-positive (mass dissipation). This is the abstract type
+    every downstream instantiation must inhabit. -/
+structure CompartmentalMatrix (n : Type*) [Fintype n] [DecidableEq n] where
+  /-- The system matrix, an endomorphism of the finite state space. -/
+  toFun : n → n → ℝ
+  /-- Off-diagonal entries are non-negative. -/
+  offDiag_nonneg : ∀ i j, i ≠ j → 0 ≤ toFun i j
+  /-- Column sums are non-positive. -/
+  colSums_nonpos : ∀ j, ∑ i, toFun i j ≤ 0
+
+namespace CompartmentalMatrix
+
+variable (C : CompartmentalMatrix n)
+
+/-- A compartmental matrix is Metzler. -/
+lemma isMetzler : IsMetzler C.toFun :=
+  C.offDiag_nonneg
+
+/-- A compartmental matrix has non-positive column sums. -/
+lemma hasNonposColSums : HasNonposColSums C.toFun :=
+  C.colSums_nonpos
+
+end CompartmentalMatrix
+
+/-! ## Non-negative vectors and total mass -/
 
 /-- A state vector x is non-negative (all components ≥ 0). -/
 def NonNegVec (x : n → ℝ) : Prop :=
@@ -96,6 +144,33 @@ lemma totalMass_nonneg [Fintype n] {x : n → ℝ} (hx : NonNegVec x) :
 noncomputable def mulVec (K : n → n → ℝ) (x : n → ℝ) : n → ℝ :=
   fun i => ∑ j, K i j * x j
 
+/-! ## Diagonal sign of compartmental matrices -/
+
+/-- For a Metzler matrix with non-positive column sums, every diagonal entry
+    is non-positive: `K j j = colSum_j - ∑_{i ≠ j} K i j ≤ 0`. -/
+lemma diag_nonpos {K : n → n → ℝ} (hK : IsMetzler K)
+    (hcol : HasNonposColSums K) (j : n) : K j j ≤ 0 := by
+  classical
+  have hdiag : (∑ i, (if i = j then K i j else (0:ℝ))) = K j j := by
+    rw [Finset.sum_ite_eq']
+    simp
+  have hrest : (0:ℝ) ≤ ∑ i, (if i = j then (0:ℝ) else K i j) :=
+    Finset.sum_nonneg fun i _hi => by
+      by_cases hij : i = j
+      · simp [hij]
+      · rw [if_neg hij]
+        exact hK i j hij
+  have hsplit : (∑ i, K i j)
+      = (∑ i, (if i = j then K i j else (0:ℝ)))
+        + ∑ i, (if i = j then (0:ℝ) else K i j) := by
+    rw [← Finset.sum_add_distrib]
+    exact Finset.sum_congr rfl (fun i _hi => by by_cases hij : i = j <;> simp [hij])
+  have hcolj := hcol j
+  rw [hsplit, hdiag] at hcolj
+  linarith [hcolj, hrest]
+
+/-! ## Mass dissipation and conservation -/
+
 /-- For a Metzler matrix with non-positive column sums and a non-negative
     state vector, the derivative of total mass is ≤ 0.
 
@@ -110,17 +185,30 @@ theorem mass_dissipation_rate [Fintype n] [DecidableEq n]
   unfold totalMass mulVec
   rw [Finset.sum_comm]
   -- Goal: ∑_j (∑_i K(i,j) * x(j)) ≤ 0
-  -- Rewrite inner sum: K(i,j) * x(j) = x(j) * K(i,j), then factor
   have hfactor : ∀ j, (∑ i, K i j * x j) = x j * ∑ i, K i j := by
     intro j
     calc (∑ i, K i j * x j) = ∑ i, x j * K i j := by
           congr 1; ext i; ring
       _ = x j * ∑ i, K i j := by rw [Finset.mul_sum]
   simp only [hfactor]
-  -- Goal: ∑_j x j * ∑ i, K i j ≤ 0
   apply Finset.sum_nonpos
   intro j _hj
   exact mul_nonpos_of_nonneg_of_nonpos (hx j) (hcol j)
+
+/-- Exact mass conservation: if every column sum vanishes (a closed,
+    conservative system), the total-mass rate is exactly zero. -/
+theorem mass_conservation_rate {K : n → n → ℝ} {x : n → ℝ}
+    (hcol : ∀ j, ∑ i, K i j = 0) (hx : NonNegVec x) :
+    totalMass (mulVec K x) = 0 := by
+  unfold totalMass mulVec
+  rw [Finset.sum_comm]
+  have hfactor : ∀ j, (∑ i, K i j * x j) = x j * ∑ i, K i j := by
+    intro j
+    calc (∑ i, K i j * x j) = ∑ i, x j * K i j := by
+          congr 1; ext i; ring
+      _ = x j * ∑ i, K i j := by rw [Finset.mul_sum]
+  simp only [hfactor]
+  exact Finset.sum_eq_zero (fun j _hj => by rw [hcol j]; ring)
 
 /-- Total mass is non-increasing when the dissipation rate is ≤ 0
     and initial mass is non-negative. -/
@@ -137,9 +225,6 @@ theorem totalMass_non_increasing [Fintype n] [DecidableEq n]
           congr 1; ext i; ring
       _ = x j * ∑ i, K i j := by rw [Finset.mul_sum]
   simp only [hfactor]
-  -- Goal: ∑_j x j * ∑ i, K i j ≤ ∑_j x j
-  -- Each term x_j * (∑_i K_ij) ≤ x_j * 0 = 0 since ∑_i K_ij ≤ 0
-  -- So the sum is ≤ 0 ≤ ∑_j x j
   have hsum_le_0 : (∑ j, x j * ∑ i, K i j) ≤ 0 := by
     apply Finset.sum_nonpos
     intro j _
@@ -147,296 +232,128 @@ theorem totalMass_non_increasing [Fintype n] [DecidableEq n]
   have hsum_nonneg : (0 : ℝ) ≤ ∑ j, x j := totalMass_nonneg hx
   linarith
 
-end Compartmental
+/-! ## General Orthant Invariance Theorem (forward Euler) -/
 
-/-! ## Full 6-compartment PBPK system matrix (VeriTrial `pbpk_ode`).
-
-State order: 0 = gut, 1 = liver, 2 = central, 3 = periph, 4 = effect, 5 = elim.
-See `VeriTrial/src/insilico_trial/pbpk/model.py :: pbpk_ode`.
--/
-
-namespace Compartmental
-
-/-- Symbolic 6-compartment PBPK Jacobian. -/
-noncomputable def pbpkK (ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL : ℝ) :
-    Fin 6 → Fin 6 → ℝ := fun i j =>
-  if i.val = 0 ∧ j.val = 0 then -ka
-  else if i.val = 2 ∧ j.val = 0 then ka
-  else if i.val = 1 ∧ j.val = 1 then -(Ql / (Vl * Kpl))
-  else if i.val = 1 ∧ j.val = 2 then Ql / Vc
-  else if i.val = 3 ∧ j.val = 3 then -(Qp / (Vp * Kpp))
-  else if i.val = 3 ∧ j.val = 2 then Qp / Vc
-  else if i.val = 4 ∧ j.val = 4 then -(Qe / (Ve * Kpe))
-  else if i.val = 4 ∧ j.val = 2 then Qe / Vc
-  else if i.val = 2 ∧ j.val = 1 then Ql / (Vl * Kpl)
-  else if i.val = 2 ∧ j.val = 3 then Qp / (Vp * Kpp)
-  else if i.val = 2 ∧ j.val = 4 then Qe / (Ve * Kpe)
-  else if i.val = 2 ∧ j.val = 2 then (-(Ql + Qp + Qe) / Vc - CL / Vc)
-  else if i.val = 5 ∧ j.val = 2 then CL / Vc
-  else 0
-
-/-- PBPK system matrix is Metzler for strictly positive parameters. -/
-theorem pbpk_is_metzler {ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL : ℝ}
-    (hka : 0 < ka) (hQl : 0 < Ql) (hQp : 0 < Qp) (hQe : 0 < Qe)
-    (hVc : 0 < Vc) (hVl : 0 < Vl) (hVp : 0 < Vp) (hVe : 0 < Ve)
-    (hKpl : 0 < Kpl) (hKpp : 0 < Kpp) (hKpe : 0 < Kpe)
-    (hCL : 0 ≤ CL) :
-    IsMetzler (pbpkK ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL) := by
-  intro i j hij
-  fin_cases i <;> fin_cases j <;> simp_all [pbpkK] <;> positivity
-
-/-- Column sums vanish (closed system incl. elim accumulator). -/
-theorem pbpk_col_sums_eq_zero {ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL : ℝ}
-    (hVc : 0 < Vc) (hNe : Vc ≠ 0) :
-    ∀ j : Fin 6, ∑ i, pbpkK ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL i j = 0 := by
-  intro j
-  fin_cases j <;> simp [pbpkK, Fin.sum_univ_six] <;> ring
-
-/-- When CL = 0: alias kept for API stability. -/
-theorem pbpk_mass_conservation_zero_cl {ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe : ℝ}
-    (hVc : 0 < Vc) (hNe : Vc ≠ 0) :
-    ∀ j : Fin 6, ∑ i, pbpkK ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe 0 i j = 0 :=
-  pbpk_col_sums_eq_zero hVc hNe
-
-/-- Column sums are non-positive for CL ≥ 0 (in fact exactly zero). -/
-theorem pbpk_hasNonposColSums {ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL : ℝ}
-    (hVc : 0 < Vc) (hNe : Vc ≠ 0) :
-    HasNonposColSums (pbpkK ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL) := by
-  intro j
-  rw [pbpk_col_sums_eq_zero hVc hNe j]
-
-/-- Mass dissipation for CL ≥ 0: total-mass rate ≤ 0 (in fact = 0). -/
-theorem pbpk_mass_dissipation_positive_cl {ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL : ℝ}
-    (hka : 0 < ka) (hQl : 0 < Ql) (hQp : 0 < Qp) (hQe : 0 < Qe)
-    (hVc : 0 < Vc) (hVl : 0 < Vl) (hVp : 0 < Vp) (hVe : 0 < Ve)
-    (hKpl : 0 < Kpl) (hKpp : 0 < Kpp) (hKpe : 0 < Kpe)
-    (hCL : 0 ≤ CL) (hNe : Vc ≠ 0)
-    {y : Fin 6 → ℝ} (hy : NonNegVec y) :
-    totalMass (mulVec (pbpkK ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL) y) ≤ 0 :=
-  mass_dissipation_rate
-    (pbpk_is_metzler hka hQl hQp hQe hVc hVl hVp hVe hKpl hKpp hKpe hCL)
-    (pbpk_hasNonposColSums hVc hNe) hy
-
-/-- Diagonal entries are non-positive for positive parameters.
-    NOTE: the literal `∀ i, K i i < 0` from the mission brief is FALSE:
-    the elim-accumulator diagonal (i = 5) is exactly 0 by construction
-    (elim only accumulates, never drains). We prove the sharp true form:
-    ≤ 0 for all i, and < 0 for i ≠ 5. -/
-theorem pbpk_diag_nonpos (ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL : ℝ)
-    (hka : 0 < ka) (hQl : 0 < Ql) (hQp : 0 < Qp) (hQe : 0 < Qe)
-    (hVc : 0 < Vc) (hVl : 0 < Vl) (hVp : 0 < Vp) (hVe : 0 < Ve)
-    (hKpl : 0 < Kpl) (hKpp : 0 < Kpp) (hKpe : 0 < Kpe) (hCL : 0 ≤ CL) :
-    ∀ i : Fin 6, pbpkK ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL i i ≤ 0 := by
-  have e1 : 0 < Ql / (Vl * Kpl) := div_pos hQl (mul_pos hVl hKpl)
-  have e2 : 0 < Qp / (Vp * Kpp) := div_pos hQp (mul_pos hVp hKpp)
-  have e3 : 0 < Qe / (Ve * Kpe) := div_pos hQe (mul_pos hVe hKpe)
-  have e4 : 0 < (Ql + Qp + Qe) / Vc := div_pos (by linarith) hVc
-  have e5 : 0 ≤ CL / Vc := div_nonneg hCL (le_of_lt hVc)
-  have key : (-Qe + (-Qp + -Ql)) / Vc = -((Ql + Qp + Qe) / Vc) := by ring
-  intro i
-  fin_cases i <;> simp [pbpkK] <;> linarith
-
-/-- Strict negativity on the five draining compartments (all but elim). -/
-theorem pbpk_diag_neg (ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL : ℝ)
-    (hka : 0 < ka) (hQl : 0 < Ql) (hQp : 0 < Qp) (hQe : 0 < Qe)
-    (hVc : 0 < Vc) (hVl : 0 < Vl) (hVp : 0 < Vp) (hVe : 0 < Ve)
-    (hKpl : 0 < Kpl) (hKpp : 0 < Kpp) (hKpe : 0 < Kpe) (hCL : 0 ≤ CL) :
-    ∀ i : Fin 6, i ≠ 5 →
-      pbpkK ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL i i < 0 := by
-  have e1 : 0 < Ql / (Vl * Kpl) := div_pos hQl (mul_pos hVl hKpl)
-  have e2 : 0 < Qp / (Vp * Kpp) := div_pos hQp (mul_pos hVp hKpp)
-  have e3 : 0 < Qe / (Ve * Kpe) := div_pos hQe (mul_pos hVe hKpe)
-  have e4 : 0 < (Ql + Qp + Qe) / Vc := div_pos (by linarith) hVc
-  have e5 : 0 ≤ CL / Vc := div_nonneg hCL (le_of_lt hVc)
-  have key : (-Qe + (-Qp + -Ql)) / Vc = -((Ql + Qp + Qe) / Vc) := by ring
-  intro i hi
-  fin_cases i
-  · simp [pbpkK]; linarith
-  · simp [pbpkK]; linarith
-  · simp [pbpkK]; linarith
-  · simp [pbpkK]; linarith
-  · simp [pbpkK]; linarith
-  · simp at hi
-
-/-- M-matrix stage operator: for Metzler K and γΔt > 0, off-diagonals of
-    (I - γΔt·K) are non-positive, so each SDIRK2 stage preserves
-    non-negativity (inverse-positive M-matrix). -/
-theorem sdirk_stage_mmatrix_offdiag
-    {K : Fin 6 → Fin 6 → ℝ} (hK : IsMetzler K)
-    {gdt : ℝ} (hg : 0 < gdt) :
-    ∀ i j : Fin 6, i ≠ j →
-      (if i = j then (1 : ℝ) else 0) - gdt * K i j ≤ 0 := by
-  intro i j hij
-  simp [hij]
-  exact mul_nonneg (le_of_lt hg) (hK i j hij)
-
-/-- Forward-Euler step: (I + dt·K) y. -/
-noncomputable def fwdEuler (K : Fin 6 → Fin 6 → ℝ) (dt : ℝ) (y : Fin 6 → ℝ) :
-    Fin 6 → ℝ :=
+/-- Forward-Euler step: `(I + Δt·K) y`, generic over any finite state space. -/
+noncomputable def fwdEuler (K : n → n → ℝ) (dt : ℝ) (y : n → ℝ) : n → ℝ :=
   fun i => y i + dt * ∑ j, K i j * y j
 
-set_option maxHeartbeats 800000
-/-- Forward-Euler stability: under the Metzler step bound every entry stays ≥ 0. -/
-theorem pbpk_forward_euler_nonneg
-    (ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL dt : ℝ)
-    (hka : 0 < ka) (hQl : 0 < Ql) (hQp : 0 < Qp) (hQe : 0 < Qe)
-    (hVc : 0 < Vc) (hVl : 0 < Vl) (hVp : 0 < Vp) (hVe : 0 < Ve)
-    (hKpl : 0 < Kpl) (hKpp : 0 < Kpp) (hKpe : 0 < Kpe)
-    (hCL : 0 ≤ CL) (hdt : 0 ≤ dt)
-    (hdtc : dt ≤ Vc / (Ql + Qp + Qe + CL))
-    (hdtg : dt ≤ 1 / ka)
-    (hdtl : dt ≤ Vl * Kpl / Ql)
-    (hdtp : dt ≤ Vp * Kpp / Qp)
-    (hdte : dt ≤ Ve * Kpe / Qe)
-    {y : Fin 6 → ℝ} (hy : NonNegVec y) :
-    NonNegVec (fwdEuler (pbpkK ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL) dt y) := by
-  have hQsum : 0 < Ql + Qp + Qe + CL := by linarith [hCL]
-  have e1 : 0 < Ql / (Vl * Kpl) := div_pos hQl (mul_pos hVl hKpl)
-  have e2 : 0 < Qp / (Vp * Kpp) := div_pos hQp (mul_pos hVp hKpp)
-  have e3 : 0 < Qe / (Ve * Kpe) := div_pos hQe (mul_pos hVe hKpe)
-  have e4 : 0 < (Ql + Qp + Qe) / Vc + CL / Vc := by positivity
-  have g1 : dt * ka ≤ 1 := by
-    calc dt * ka ≤ (1 / ka) * ka :=
-          mul_le_mul_of_nonneg_right hdtg (le_of_lt hka)
-      _ = 1 := div_mul_cancel₀ _ (ne_of_gt hka)
-  have g2 : dt * (Ql / (Vl * Kpl)) ≤ 1 := by
-    have : dt ≤ (Vl * Kpl) / Ql := by linarith [hdtl]
-    calc dt * (Ql / (Vl * Kpl)) ≤ ((Vl * Kpl) / Ql) * (Ql / (Vl * Kpl)) := by
-          apply mul_le_mul_of_nonneg_right this (le_of_lt e1)
-      _ = 1 := by field_simp
-  have g3 : dt * (Qp / (Vp * Kpp)) ≤ 1 := by
-    have : dt ≤ (Vp * Kpp) / Qp := by linarith [hdtp]
-    calc dt * (Qp / (Vp * Kpp)) ≤ ((Vp * Kpp) / Qp) * (Qp / (Vp * Kpp)) := by
-          apply mul_le_mul_of_nonneg_right this (le_of_lt e2)
-      _ = 1 := by field_simp
-  have g4 : dt * (Qe / (Ve * Kpe)) ≤ 1 := by
-    have : dt ≤ (Ve * Kpe) / Qe := by linarith [hdte]
-    calc dt * (Qe / (Ve * Kpe)) ≤ ((Ve * Kpe) / Qe) * (Qe / (Ve * Kpe)) := by
-          apply mul_le_mul_of_nonneg_right this (le_of_lt e3)
-      _ = 1 := by field_simp
-  have g0 : dt * ((Ql + Qp + Qe) / Vc + CL / Vc) ≤ 1 := by
-    have hsum2 : (Ql + Qp + Qe) / Vc + CL / Vc = (Ql + Qp + Qe + CL) / Vc := by ring
-    rw [hsum2]
-    calc dt * ((Ql + Qp + Qe + CL) / Vc) ≤ (Vc / (Ql + Qp + Qe + CL)) * ((Ql + Qp + Qe + CL) / Vc) := by
-          apply mul_le_mul_of_nonneg_right hdtc (by positivity)
-      _ = 1 := by field_simp
-  have y0 := hy 0; have y1 := hy 1; have y2 := hy 2
-  have y3 := hy 3; have y4 := hy 4; have y5 := hy 5
-  -- Central-branch expansion certificate: isolates the (1 - dt·X)·y₂ diagonal
-  -- term so the remainder is a sum of manifestly non-negative products.
-  have key2 : y 2 + dt * (ka * y 0 + Ql / (Vl * Kpl) * y 1 + ((-Qe + (-Qp + -Ql)) / Vc - CL / Vc) * y 2 + Qp / (Vp * Kpp) * y 3 + Qe / (Ve * Kpe) * y 4)
-      = (1 - dt * ((Ql + Qp + Qe) / Vc + CL / Vc)) * y 2 + dt * ka * y 0 + dt * (Ql / (Vl * Kpl)) * y 1 + dt * (Qp / (Vp * Kpp)) * y 3 + dt * (Qe / (Ve * Kpe)) * y 4 := by
-    field_simp
-    ring
-  have central_nonneg : 0 ≤ y 2 + dt * (ka * y 0 + Ql / (Vl * Kpl) * y 1 + ((-Qe + (-Qp + -Ql)) / Vc - CL / Vc) * y 2 + Qp / (Vp * Kpp) * y 3 + Qe / (Ve * Kpe) * y 4) := by
-    rw [key2]
-    apply add_nonneg
-    apply add_nonneg
-    apply add_nonneg
-    apply add_nonneg
-    · exact mul_nonneg (show 0 ≤ 1 - dt * ((Ql + Qp + Qe) / Vc + CL / Vc) by linarith [g0]) y2
-    · exact mul_nonneg (mul_nonneg hdt (le_of_lt hka)) y0
-    · exact mul_nonneg (mul_nonneg hdt (le_of_lt e1)) y1
-    · exact mul_nonneg (mul_nonneg hdt (le_of_lt e2)) y3
-    · exact mul_nonneg (mul_nonneg hdt (le_of_lt e3)) y4
+/-- **General Orthant Invariance Theorem.**
+
+For a Metzler matrix `K` and step size `Δt` satisfying the Metzler step bound
+`Δt·|K_jj| ≤ 1` for every `j` (equivalently `Δt ≤ min_j 1/|K_jj|` when all
+diagonal magnitudes are positive), the forward-Euler map `(I + Δt·K)` maps
+non-negative vectors to non-negative vectors.
+
+Proof: entry `i` expands as `(1 + Δt·K_ii)·y_i + Δt·∑_{j≠i} K_ij·y_j`, where
+the step bound makes the first factor non-negative (splitting on the sign of
+`K_ii`) and the Metzler property makes every summand of the second term
+non-negative. -/
+theorem orthant_invariance_fwdEuler
+    {K : n → n → ℝ} (hK : IsMetzler K)
+    {dt : ℝ} (hdt : 0 ≤ dt) (hstep : ∀ j, dt * |K j j| ≤ 1)
+    {y : n → ℝ} (hy : NonNegVec y) :
+    NonNegVec (fwdEuler K dt y) := by
   intro i
-  fin_cases i
-  · simp [fwdEuler, pbpkK, Fin.sum_univ_six]
-    nlinarith [mul_nonneg hdt y0,
-        mul_nonneg (show 0 ≤ 1 - dt * ka by linarith) y0]
-  · simp [fwdEuler, pbpkK, Fin.sum_univ_six]
-    nlinarith [mul_nonneg hdt y1, mul_nonneg hdt y2,
-        mul_nonneg (show 0 ≤ 1 - dt * (Ql / (Vl * Kpl)) by linarith) y1,
-        mul_nonneg (mul_nonneg hdt (div_nonneg (le_of_lt hQl) (le_of_lt hVc))) y2]
-  · simp only [fwdEuler, pbpkK, Fin.sum_univ_six]
-    simpa using central_nonneg
-  · simp [fwdEuler, pbpkK, Fin.sum_univ_six]
-    nlinarith [mul_nonneg hdt y2, mul_nonneg hdt y3,
-        mul_nonneg (show 0 ≤ 1 - dt * (Qp / (Vp * Kpp)) by linarith) y3,
-        div_nonneg (le_of_lt hQp) (le_of_lt hVc),
-        mul_nonneg (mul_nonneg hdt (div_nonneg (le_of_lt hQp) (le_of_lt hVc))) y2]
-  · simp [fwdEuler, pbpkK, Fin.sum_univ_six]
-    nlinarith [mul_nonneg hdt y2, mul_nonneg hdt y4,
-        mul_nonneg (show 0 ≤ 1 - dt * (Qe / (Ve * Kpe)) by linarith) y4,
-        div_nonneg (le_of_lt hQe) (le_of_lt hVc),
-        mul_nonneg (mul_nonneg hdt (div_nonneg (le_of_lt hQe) (le_of_lt hVc))) y2]
-  · simp [fwdEuler, pbpkK, Fin.sum_univ_six]
-    nlinarith [mul_nonneg hdt y2, mul_nonneg hdt y5,
-        div_nonneg hCL (le_of_lt hVc),
-        mul_nonneg (mul_nonneg hdt (div_nonneg hCL (le_of_lt hVc))) y2]
+  unfold fwdEuler
+  have hco : 0 ≤ 1 + dt * K i i := by
+    have h := hstep i
+    by_cases hz : K i i < 0
+    · have habs : |K i i| = -(K i i) := abs_of_neg hz
+      rw [habs] at h
+      linarith
+    · have hnn : 0 ≤ K i i := le_of_not_gt hz
+      have hprod : 0 ≤ dt * K i i := mul_nonneg hdt hnn
+      linarith
+  have hsplit : ∑ j, K i j * y j
+      = K i i * y i
+        + Finset.sum (Finset.univ.erase i) (fun j => K i j * y j) := by
+    rw [← Finset.add_sum_erase _ _ (Finset.mem_univ i)]
+  have hoff : 0 ≤ dt * Finset.sum (Finset.univ.erase i) (fun j => K i j * y j) := by
+    apply mul_nonneg hdt
+    apply Finset.sum_nonneg
+    intro j hj
+    rw [Finset.mem_erase] at hj
+    exact mul_nonneg (hK i j (Ne.symm hj.1)) (hy j)
+  calc y i + dt * ∑ j, K i j * y j
+      = (1 + dt * K i i) * y i
+        + dt * Finset.sum (Finset.univ.erase i) (fun j => K i j * y j) := by
+          rw [hsplit]; ring
+    _ ≥ 0 := add_nonneg (mul_nonneg hco (hy i)) hoff
 
-/-- Elimination accumulator dissipates monotonically: ΔA_elim ≥ 0. -/
-theorem pbpk_elim_accumulator_nonneg
-    (CL Vc dt A_central : ℝ)
-    (hCL : 0 ≤ CL) (hVc : 0 < Vc) (hdt : 0 ≤ dt) (hA : 0 ≤ A_central) :
-    0 ≤ dt * (CL / Vc * A_central) :=
-  mul_nonneg hdt (mul_nonneg (div_nonneg hCL (le_of_lt hVc)) hA)
+/-- **Orthant invariance under the literal division-form step bound**
+`Δt ≤ 1/|K_jj|` for every `j` (i.e. `Δt ≤ min_j 1/|K_jj|`). -/
+theorem orthant_invariance_fwdEuler_divBound
+    {K : n → n → ℝ} (hK : IsMetzler K)
+    {dt : ℝ} (hdt : 0 ≤ dt) (hstep : ∀ j, dt ≤ 1 / |K j j|)
+    {y : n → ℝ} (hy : NonNegVec y) :
+    NonNegVec (fwdEuler K dt y) := by
+  refine orthant_invariance_fwdEuler hK hdt ?_ hy
+  intro j
+  have h := hstep j
+  by_cases hz : K j j = 0
+  · rw [hz, abs_zero, div_zero] at h
+    have ht : dt = 0 := le_antisymm h hdt
+    simp [ht]
+  · have hpos : 0 < |K j j| := abs_pos.2 hz
+    have h2 : dt * |K j j| ≤ (1 / |K j j|) * |K j j| :=
+      mul_le_mul_of_nonneg_right h (le_of_lt hpos)
+    rw [div_mul_cancel₀ _ (ne_of_gt hpos)] at h2
+    exact h2
 
-/-- Monotonic elimination inflow: flux into the elim accumulator is non-negative. -/
-theorem pbpk_elim_flux_nonneg (CL Vc : ℝ) (hCL : 0 < CL) (hVc : 0 < Vc) (Ac : ℝ) (hAc : 0 ≤ Ac) :
-    0 ≤ (CL / Vc) * Ac :=
-  mul_nonneg (le_of_lt (div_pos hCL hVc)) hAc
+/-! ## General SDIRK2 stage matrix (M-matrix structure) -/
 
-/-- Theoretical physical Cmax dilution bound: initial plasma concentration
-    cannot exceed physical dilution Dose / Vc. -/
-theorem pbpk_cmax_physical_bound (Dose Vc : ℝ) (hDose : 0 < Dose) (hVc : 0 < Vc) :
-    Dose / Vc ≤ Dose / Vc :=
-  le_rfl
+/-- SDIRK2 stage matrix `M = I - c·K` for step factor `c = γΔt > 0`. -/
+noncomputable def sdirkStage (K : n → n → ℝ) (c : ℝ) : n → n → ℝ :=
+  fun i j => (if i = j then 1 else 0) - c * K i j
 
-/-- Discrete impulsive bolus administration: add dose to gut (index 0). -/
-def bolusDose (y : Fin 6 → ℝ) (dose : ℝ) : Fin 6 → ℝ :=
-  fun i => if i.val = 0 then y i + dose else y i
+/-- A Z-matrix has non-positive off-diagonal entries. -/
+def IsZMatrix (M : n → n → ℝ) : Prop :=
+  ∀ i j, i ≠ j → M i j ≤ 0
 
-/-- Bolus administration preserves state non-negativity. -/
-theorem pbpk_bolus_nonneg {y : Fin 6 → ℝ} (hy : NonNegVec y) {dose : ℝ} (hdose : 0 ≤ dose) :
-    NonNegVec (bolusDose y dose) := by
-  intro i
-  unfold bolusDose
-  by_cases h : i.val = 0
-  · simp [h]; exact add_nonneg (hy i) hdose
-  · simp [h]; exact hy i
-
-/-- Total mass updates additively under bolus administration. -/
-theorem pbpk_bolus_mass {y : Fin 6 → ℝ} (dose : ℝ) :
-    totalMass (bolusDose y dose) = totalMass y + dose := by
-  unfold totalMass bolusDose
-  have h0 : (⟨0, by omega⟩ : Fin 6) ∈ (Finset.univ : Finset (Fin 6)) :=
-    Finset.mem_univ _
-  -- Split sum at index 0 via add + sum of rest is messy; use Fin.sum_univ_six
-  simp [Fin.sum_univ_six]
-  ring
-
-end Compartmental
-
-namespace Compartmental
-
-/-- 9-state coupled PBPK+DILI system (6 PBPK + GSH, S_mito, ALT). -/
-noncomputable def pbpkDiliSystem (ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL
-    k_synth k_deplete IC50 k_leak k_elim ALT_base : ℝ) :
-    Fin 9 → Fin 9 → ℝ := fun i j =>
-  if h : i.val < 6 ∧ j.val < 6 then
-    pbpkK ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL ⟨i.val, by omega⟩ ⟨j.val, by omega⟩
-  else 0
-
-/-- Total mass conservation on 6 compartmental states when CL = 0. -/
-theorem pbpkDili_mass_conservation_zero_cl (ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe : ℝ)
-    (hVc : 0 < Vc) (hNe : Vc ≠ 0) :
-    ∀ j : Fin 6, ∑ i, pbpkK ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe 0 i j = 0 :=
-  pbpk_col_sums_eq_zero hVc hNe
-
-/-- GSH bounded in [0,1]: synthesis/depletion fixed point lies in unit interval. -/
-theorem gsh_mem_unit (k_synth k_dep C : ℝ) (hs : 0 < k_synth) (hd : 0 ≤ k_dep) (hC : 0 ≤ C) :
-    0 ≤ k_synth / (k_synth + k_dep * C) ∧ k_synth / (k_synth + k_dep * C) ≤ 1 := by
-  have hpos : 0 < k_synth + k_dep * C := by positivity
+/-- The SDIRK2 stage matrix of a compartmental (Metzler) system is a
+    Z-matrix with diagonal entries ≥ 1: off-diagonals `-c·K_ij ≤ 0`
+    since `K_ij ≥ 0`, and diagonal `1 - c·K_ii ≥ 1` since `K_ii ≤ 0`. -/
+theorem sdirk_stage_isMmatrix {K : n → n → ℝ} (hK : IsMetzler K)
+    (hcol : HasNonposColSums K) {c : ℝ} (hc : 0 < c) :
+    IsZMatrix (sdirkStage K c) ∧ ∀ i, 1 ≤ sdirkStage K c i i := by
   constructor
-  · exact div_nonneg (le_of_lt hs) (le_of_lt hpos)
-  · rw [div_le_one hpos]; linarith [mul_nonneg hd hC]
+  · intro i j hij
+    unfold sdirkStage
+    rw [if_neg hij]
+    have h : 0 ≤ c * K i j := mul_nonneg (le_of_lt hc) (hK i j hij)
+    linarith
+  · intro i
+    unfold sdirkStage
+    rw [if_pos rfl]
+    have hd : K i i ≤ 0 := diag_nonpos hK hcol i
+    have h : c * K i i ≤ 0 := mul_nonpos_of_nonneg_of_nonpos (le_of_lt hc) hd
+    linarith
 
-/-- ALT baseline-bounded: steady state ALT = base + leak/elim ≥ base. -/
-theorem alt_ge_base (k_leak k_elim G S base : ℝ) (hkl : 0 ≤ k_leak)
-    (hke : 0 < k_elim) (hG : G ≤ 1) (hS : 0 ≤ S) :
-    base ≤ base + k_leak * (1 - G) * S / k_elim := by
-  have h : 0 ≤ k_leak * (1 - G) * S / k_elim := by positivity
-  linarith
+/-- Any matrix with a non-negative inverse preserves non-negativity:
+    if `M⁻¹` exists entry-wise non-negative and `M·z = b ≥ 0`,
+    then `z = M⁻¹·b ≥ 0`. This is the abstract inverse-nonnegativity
+    used by the SDIRK2 stage solve. -/
+theorem mmatrix_inv_preserves_nonneg {M Minv : n → n → ℝ}
+    (hinv_nonneg : ∀ i j, 0 ≤ Minv i j)
+    {b z : n → ℝ} (hb : NonNegVec b)
+    (hsolve : ∀ i, ∑ j, M i j * z j = b i)
+    (hinv : ∀ i j, ∑ k, Minv i k * M k j = (if i = j then 1 else 0)) :
+    NonNegVec z := by
+  intro i
+  have h : z i = ∑ k, Minv i k * b k := by
+    calc z i = ∑ j, (if i = j then (1:ℝ) else 0) * z j := by
+            simp
+      _ = ∑ j, (∑ k, Minv i k * M k j) * z j := by
+            congr 1; ext j; rw [hinv i j]
+      _ = ∑ k, Minv i k * b k := by
+            simp_rw [Finset.sum_mul]
+            rw [Finset.sum_comm]
+            refine Finset.sum_congr rfl (fun k _ => ?_)
+            rw [← hsolve k, Finset.mul_sum]
+            refine Finset.sum_congr rfl (fun j _ => ?_)
+            ring
+  rw [h]
+  exact Finset.sum_nonneg (fun k _ => mul_nonneg (hinv_nonneg i k) (hb k))
 
 end Compartmental

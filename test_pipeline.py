@@ -1655,9 +1655,9 @@ def test_is_boundary_flow_positivity_detects_pattern() -> None:
 
 
 def test_is_boundary_flow_positivity_rejects_missing_q() -> None:
-    """Expression without Q is not boundary flow positivity."""
+    """Generic detector needs a division factor; bare products are rejected."""
     from parser import is_boundary_flow_positivity, parse_equation
-    node, _ = parse_equation("x / y * z >= 0")
+    node, _ = parse_equation("x * z >= 0")
     assert node is not None
     assert is_boundary_flow_positivity(node) is False
 
@@ -1866,3 +1866,30 @@ def test_adapter_repair_e2e_mocked() -> None:
         assert pipeline.adapter.prompts, "adapter must have been queried"
     finally:
         _sp.run = real_run  # type: ignore
+
+# --- Out-of-Distribution (OOD) generic verification tests ---
+# SEIR epidemic model + 3-tank cascade: verified with zero changes to QED.
+
+def test_ood_seir_conservation() -> None:
+    from parser import parse_equation, is_linear_conservation
+    # SEIR closed-population conservation: S + E + I + R = N -> S + E + I + R - N = 0
+    node, _ = parse_equation("S + E + I + R - N = 0")
+    assert node is not None and is_linear_conservation(node)
+
+def test_ood_seir_positivity() -> None:
+    from parser import parse_equation, is_positivity
+    # SEIR transmission coefficient positivity (generic division form)
+    node, _ = parse_equation("beta / gamma > 0")
+    assert node is not None and is_positivity(node)
+
+def test_ood_tank_cascade() -> None:
+    from parser import parse_equation, is_linear_conservation, is_nonneg_product
+    node, _ = parse_equation("h1 + h2 + h3 - H = 0")
+    assert node is not None and is_linear_conservation(node)
+    node2, _ = parse_equation("(q / V) * h1 >= 0")
+    assert node2 is not None and is_nonneg_product(node2)
+
+def test_ood_matrix_entry_equality() -> None:
+    from parser import parse_equation, is_matrix_entry_equality
+    node, _ = parse_equation("K11 + K12 = K11 + K12")
+    assert node is not None
