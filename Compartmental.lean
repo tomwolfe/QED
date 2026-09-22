@@ -258,6 +258,18 @@ theorem pbpk_diag_neg (ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL : ℝ)
   · simp [pbpkK]; linarith
   · simp at hi
 
+/-- M-matrix stage operator: for Metzler K and γΔt > 0, off-diagonals of
+    (I - γΔt·K) are non-positive, so each SDIRK2 stage preserves
+    non-negativity (inverse-positive M-matrix). -/
+theorem sdirk_stage_mmatrix_offdiag
+    {K : Fin 6 → Fin 6 → ℝ} (hK : IsMetzler K)
+    {gdt : ℝ} (hg : 0 < gdt) :
+    ∀ i j : Fin 6, i ≠ j →
+      (if i = j then (1 : ℝ) else 0) - gdt * K i j ≤ 0 := by
+  intro i j hij
+  simp [hij]
+  exact mul_nonneg (le_of_lt hg) (hK i j hij)
+
 /-- Forward-Euler step: (I + dt·K) y. -/
 noncomputable def fwdEuler (K : Fin 6 → Fin 6 → ℝ) (dt : ℝ) (y : Fin 6 → ℝ) :
     Fin 6 → ℝ :=

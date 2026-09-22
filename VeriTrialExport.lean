@@ -49,3 +49,21 @@ theorem veritrial_dili_matches_pbpkDiliSystem
     have H := veritrial_model_matches_pbpkK ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL
     exact congr_fun (congr_fun H ⟨i.val, by omega⟩) ⟨j.val, by omega⟩
   · simp only [extracted_dili_matrix, pbpkDiliSystem, dite_eq_right h]
+
+/-- Mass dissipation over the extracted matrix: transport of the QED
+    `mass_dissipation_rate` certificate to the AST-extracted model. -/
+theorem veritrial_mass_dissipation
+  (ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL : ℝ)
+  (hka : 0 < ka) (hQl : 0 < Ql) (hQp : 0 < Qp) (hQe : 0 < Qe)
+  (hVc : 0 < Vc) (hVl : 0 < Vl) (hVp : 0 < Vp) (hVe : 0 < Ve)
+  (hKpl : 0 < Kpl) (hKpp : 0 < Kpp) (hKpe : 0 < Kpe)
+  (hCL : 0 ≤ CL) (hNe : Vc ≠ 0)
+  {y : Fin 6 → ℝ} (hy : NonNegVec y) :
+  totalMass (mulVec (extracted_matrix ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL) y) ≤ 0 := by
+  have H : extracted_matrix ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL
+      = pbpkK ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL :=
+    veritrial_model_matches_pbpkK ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL
+  rw [H]
+  exact mass_dissipation_rate
+    (pbpk_is_metzler hka hQl hQp hQe hVc hVl hVp hVe hKpl hKpp hKpe hCL)
+    (pbpk_hasNonposColSums hVc hNe) hy
