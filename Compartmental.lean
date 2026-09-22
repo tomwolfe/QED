@@ -12,6 +12,8 @@
   * the General SDIRK2 Invertibility Theorem: the stage matrix
     `I - γΔt·K` of an SDIRK2 step is a nonsingular M-matrix whose inverse
     preserves non-negativity.
+  * saturable kinetics: the flux `f(C) = Vmax * C / (Km + C)` is
+    non-negative, strictly bounded by `Vmax`, and monotone on `C ≥ 0`.
 
   The file contains no model-specific matrices and no domain knowledge of any
   kind. No `sorry` or `sorryAx` is used anywhere in this file.
@@ -355,5 +357,52 @@ theorem mmatrix_inv_preserves_nonneg {M Minv : n → n → ℝ}
             ring
   rw [h]
   exact Finset.sum_nonneg (fun k _ => mul_nonneg (hinv_nonneg i k) (hb k))
+
+/-! ## Saturable cooperative kinetics -/
+
+/-- Saturable flux with capacity `Vmax > 0` and half-saturation `Km > 0`:
+    `f(C) = Vmax * C / (Km + C)`.
+
+    Purely real-analytic: `Vmax` is a rate capacity and `Km` a saturation
+    constant. No domain meaning is attached; downstream models instantiate
+    this with their own parameters. -/
+noncomputable def saturableFlux (Vmax Km C : ℝ) : ℝ :=
+  Vmax * C / (Km + C)
+
+/-- Saturable flux is non-negative on non-negative substrate. -/
+theorem saturableFlux_nonneg {Vmax Km C : ℝ}
+    (hV : 0 < Vmax) (hK : 0 < Km) (hC : 0 ≤ C) :
+    0 ≤ saturableFlux Vmax Km C := by
+  unfold saturableFlux
+  exact div_nonneg (mul_nonneg (le_of_lt hV) hC) (by linarith : (0:ℝ) ≤ Km + C)
+
+/-- Saturable flux is strictly bounded by capacity on non-negative substrate:
+    `Vmax * C / (Km + C) < Vmax` since `Vmax * Km > 0` absorbs the gap. -/
+theorem saturableFlux_bounded {Vmax Km C : ℝ}
+    (hV : 0 < Vmax) (hK : 0 < Km) (hC : 0 ≤ C) :
+    saturableFlux Vmax Km C < Vmax := by
+  unfold saturableFlux
+  have hden : (0:ℝ) < Km + C := by linarith
+  rw [div_lt_iff₀ hden]
+  have heq : Vmax * (Km + C) - Vmax * C = Vmax * Km := by ring
+  have hpos : (0:ℝ) < Vmax * Km := mul_pos hV hK
+  linarith
+
+/-- Saturable flux is monotone on non-negative substrate: clearing the two
+    positive denominators reduces the goal to `0 ≤ Vmax * Km * (C₂ - C₁)`. -/
+theorem saturableFlux_mono {Vmax Km C₁ C₂ : ℝ}
+    (hV : 0 < Vmax) (hK : 0 < Km)
+    (hC₁ : 0 ≤ C₁) (h12 : C₁ ≤ C₂) :
+    saturableFlux Vmax Km C₁ ≤ saturableFlux Vmax Km C₂ := by
+  unfold saturableFlux
+  have hden₁ : (0:ℝ) < Km + C₁ := by linarith
+  have hC₂ : (0:ℝ) ≤ C₂ := le_trans hC₁ h12
+  have hden₂ : (0:ℝ) < Km + C₂ := by linarith
+  rw [div_le_div_iff₀ hden₁ hden₂]
+  have heq : Vmax * C₂ * (Km + C₁) - Vmax * C₁ * (Km + C₂)
+      = Vmax * Km * (C₂ - C₁) := by ring
+  have hkey : (0:ℝ) ≤ Vmax * Km * (C₂ - C₁) :=
+    mul_nonneg (mul_nonneg (le_of_lt hV) (le_of_lt hK)) (sub_nonneg.mpr h12)
+  linarith
 
 end Compartmental

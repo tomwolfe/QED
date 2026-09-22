@@ -283,7 +283,7 @@ class LeanAgenticPipeline:
             return 'Int'
         
         # Inequalities involving multiplication of symbolic variables
-        # (e.g. CL * C_p > 0) need Real for positivity hypotheses.
+        # (e.g. k * x > 0) need Real for positivity hypotheses.
         if re.search(r'[><=!]', expression) and re.search(r'\w\s*\*\s*\w', expression):
             return 'Real'
         
@@ -706,7 +706,7 @@ class LeanAgenticPipeline:
 
             # For strict inequalities (Gt/Lt) with no division variables,
             # generate strict positivity hypotheses for ALL variables.
-            # E.g. CL * C_p > 0 needs (hCL : 0 < CL) (hC_p : 0 < C_p).
+            # E.g. k * x > 0 needs (hk : 0 < k) (hx : 0 < x).
             if not hyp_vars and isinstance(eq_node, (Gt, Lt)) and eq_node is not None:
                 all_expr_vars: set[str] = set()
                 _collect_vars(eq_node, all_expr_vars)

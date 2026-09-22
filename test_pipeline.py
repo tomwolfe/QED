@@ -1639,6 +1639,42 @@ def test_rational_structure_parenthesized_ratio() -> None:
     assert has_rational_structure(node) is True
 
 
+def test_saturable_shapes_surface_field_or_positivity_first() -> None:
+    """Saturable flux shapes surface `intros; positivity` / `intros; field_simp; ring`.
+
+    Covers the three `Compartmental.saturableFlux` lemmas (non-negativity,
+    boundedness, monotonicity): every shape must type as Real, detect
+    rational structure, and rank a universal (`intros; …`) tactic first so
+    the pipeline never attempts a bare tactic on unintroduced hypotheses.
+    """
+    from agentic_pipeline import LeanAgenticPipeline
+    from parser import has_rational_structure, parse_equation
+    pipeline = LeanAgenticPipeline.__new__(LeanAgenticPipeline)
+    pipeline.tactic_candidates = ['rfl', 'simp', 'norm_num', 'decide', 'ring',
+                                  'linarith', 'omega', 'field_simp', 'dsimp',
+                                  'intro', 'positivity']
+    for expr in ("Vmax * C / (Km + C) >= 0",
+                 "Vmax * C / (Km + C) < Vmax",
+                 "Vmax * C1 / (Km + C1) <= Vmax * C2 / (Km + C2)"):
+        node, _ = parse_equation(expr)
+        assert node is not None
+        assert has_rational_structure(node) is True
+        assert pipeline._suggest_type(expr) == "Real"
+        first = pipeline.get_tactic_candidates(expr)[0]
+        assert first.startswith("intros; "), first
+        assert "positivity" in first or "field_simp" in first, first
+
+
+def test_saturable_positivity_hypotheses_cover_denominator() -> None:
+    """Denominator variables of the saturable shape get positivity hypotheses."""
+    from parser import extract_positivity_hypotheses, parse_equation
+    node, _ = parse_equation("Vmax * C / (Km + C) >= 0")
+    assert node is not None
+    hyps = extract_positivity_hypotheses(node)
+    assert "(hC : 0 < C)" in hyps
+    assert "(hKm : 0 < Km)" in hyps
+
+
 def test_parse_lone_minus_is_none() -> None:
     """A dangling unary minus with no operand parses to nothing."""
     node, pos = parse_expression(tokenize("-"))
