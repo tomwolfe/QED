@@ -11,41 +11,42 @@ import Compartmental
 open Compartmental
 
 /-- AST-extracted N x N Jacobian symbolically differentiated from the model ODE. -/
-noncomputable def extracted_matrix (ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL : ℝ) :
+noncomputable def extracted_matrix (ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL CLint fu_liver cyp_activity : ℝ) :
     Fin 6 → Fin 6 → ℝ := fun i j =>
-    if i.val = 0 ∧ j.val = 0 then (-ka)
-  else   if i.val = 1 ∧ j.val = 1 then (-Ql/(Kpl*Vl))
-  else   if i.val = 1 ∧ j.val = 2 then (Ql/Vc)
-  else   if i.val = 2 ∧ j.val = 0 then (ka)
-  else   if i.val = 2 ∧ j.val = 1 then (Ql/(Kpl*Vl))
-  else   if i.val = 2 ∧ j.val = 2 then ((-CL - Qe - Ql - Qp)/Vc)
-  else   if i.val = 2 ∧ j.val = 3 then (Qp/(Kpp*Vp))
-  else   if i.val = 2 ∧ j.val = 4 then (Qe/(Kpe*Ve))
-  else   if i.val = 3 ∧ j.val = 2 then (Qp/Vc)
-  else   if i.val = 3 ∧ j.val = 3 then (-Qp/(Kpp*Vp))
-  else   if i.val = 4 ∧ j.val = 2 then (Qe/Vc)
-  else   if i.val = 4 ∧ j.val = 4 then (-Qe/(Kpe*Ve))
-  else   if i.val = 5 ∧ j.val = 2 then (CL/Vc)
+    if i.val = 0 ∧ j.val = 0 then ((-CL - Qe - Ql - Qp)/Vc)
+  else   if i.val = 0 ∧ j.val = 1 then (Qe/(Kpe*Ve))
+  else   if i.val = 0 ∧ j.val = 3 then (ka)
+  else   if i.val = 0 ∧ j.val = 4 then (Ql/(Kpl*Vl))
+  else   if i.val = 0 ∧ j.val = 5 then (Qp/(Kpp*Vp))
+  else   if i.val = 1 ∧ j.val = 0 then (Qe/Vc)
+  else   if i.val = 1 ∧ j.val = 1 then (-Qe/(Kpe*Ve))
+  else   if i.val = 2 ∧ j.val = 0 then (CL/Vc)
+  else   if i.val = 2 ∧ j.val = 4 then (CLint*cyp_activity*fu_liver/Vl)
+  else   if i.val = 3 ∧ j.val = 3 then (-ka)
+  else   if i.val = 4 ∧ j.val = 0 then (Ql/Vc)
+  else   if i.val = 4 ∧ j.val = 4 then ((-CLint*Kpl*cyp_activity*fu_liver - Ql)/(Kpl*Vl))
+  else   if i.val = 5 ∧ j.val = 0 then (Qp/Vc)
+  else   if i.val = 5 ∧ j.val = 5 then (-Qp/(Kpp*Vp))
   else 0
 
 /-- Off-diagonal entries of the extracted matrix are non-negative. -/
 theorem extracted_offDiag_nonneg
-  (ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL : ℝ)
+  (ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL CLint fu_liver cyp_activity : ℝ)
   (hka : 0 < ka) (hQl : 0 < Ql) (hQp : 0 < Qp) (hQe : 0 < Qe)
   (hVc : 0 < Vc) (hVl : 0 < Vl) (hVp : 0 < Vp) (hVe : 0 < Ve)
   (hKpl : 0 < Kpl) (hKpp : 0 < Kpp) (hKpe : 0 < Kpe)
-  (hCL : 0 ≤ CL)
+  (hCL : 0 ≤ CL) (hCLint : 0 ≤ CLint) (hfu : 0 ≤ fu_liver) (hcyp : 0 ≤ cyp_activity)
   (i j : Fin 6) (hij : i ≠ j) :
-  0 ≤ extracted_matrix ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL i j := by
+  0 ≤ extracted_matrix ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL CLint fu_liver cyp_activity i j := by
   fin_cases i <;> fin_cases j <;> simp_all [extracted_matrix] <;> positivity
 
 /-- Every column sum of the extracted matrix vanishes exactly. -/
 theorem extracted_colSum_eq_zero
-  (ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL : ℝ)
+  (ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL CLint fu_liver cyp_activity : ℝ)
   (hVc : 0 < Vc) (hVl : 0 < Vl) (hVp : 0 < Vp) (hVe : 0 < Ve)
   (hKpl : 0 < Kpl) (hKpp : 0 < Kpp) (hKpe : 0 < Kpe)
   (j : Fin 6) :
-  ∑ i, extracted_matrix ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL i j = 0 := by
+  ∑ i, extracted_matrix ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL CLint fu_liver cyp_activity i j = 0 := by
   have hVc0 : Vc ≠ 0 := ne_of_gt hVc
   have hVl0 : Vl ≠ 0 := ne_of_gt hVl
   have hVp0 : Vp ≠ 0 := ne_of_gt hVp
@@ -60,64 +61,64 @@ theorem extracted_colSum_eq_zero
 
 /-- Every column sum of the extracted matrix is non-positive. -/
 theorem extracted_colSum_nonpos
-  (ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL : ℝ)
+  (ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL CLint fu_liver cyp_activity : ℝ)
   (hVc : 0 < Vc) (hVl : 0 < Vl) (hVp : 0 < Vp) (hVe : 0 < Ve)
   (hKpl : 0 < Kpl) (hKpp : 0 < Kpp) (hKpe : 0 < Kpe)
   (j : Fin 6) :
-  ∑ i, extracted_matrix ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL i j ≤ 0 := by
-  rw [extracted_colSum_eq_zero ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL
+  ∑ i, extracted_matrix ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL CLint fu_liver cyp_activity i j ≤ 0 := by
+  rw [extracted_colSum_eq_zero ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL CLint fu_liver cyp_activity
     hVc hVl hVp hVe hKpl hKpp hKpe j]
 
 /-- The extracted model inhabits QED's abstract compartmental type. -/
 noncomputable def veritrial_compartmental
-  (ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL : ℝ)
+  (ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL CLint fu_liver cyp_activity : ℝ)
   (hka : 0 < ka) (hQl : 0 < Ql) (hQp : 0 < Qp) (hQe : 0 < Qe)
   (hVc : 0 < Vc) (hVl : 0 < Vl) (hVp : 0 < Vp) (hVe : 0 < Ve)
   (hKpl : 0 < Kpl) (hKpp : 0 < Kpp) (hKpe : 0 < Kpe)
-  (hCL : 0 ≤ CL) :
+  (hCL : 0 ≤ CL) (hCLint : 0 ≤ CLint) (hfu : 0 ≤ fu_liver) (hcyp : 0 ≤ cyp_activity) :
   CompartmentalMatrix (Fin 6) where
-  toFun := extracted_matrix ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL
+  toFun := extracted_matrix ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL CLint fu_liver cyp_activity
   offDiag_nonneg :=
-    extracted_offDiag_nonneg ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL
-      hka hQl hQp hQe hVc hVl hVp hVe hKpl hKpp hKpe hCL
+    extracted_offDiag_nonneg ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL CLint fu_liver cyp_activity
+      hka hQl hQp hQe hVc hVl hVp hVe hKpl hKpp hKpe hCL hCLint hfu hcyp
   colSums_nonpos :=
-    extracted_colSum_nonpos ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL
+    extracted_colSum_nonpos ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL CLint fu_liver cyp_activity
       hVc hVl hVp hVe hKpl hKpp hKpe
 
 /-- Mass dissipation over the extracted matrix: transport of QED's generic
     `mass_dissipation_rate` certificate onto the AST-extracted model. -/
 theorem veritrial_mass_dissipation
-  (ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL : ℝ)
+  (ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL CLint fu_liver cyp_activity : ℝ)
   (hka : 0 < ka) (hQl : 0 < Ql) (hQp : 0 < Qp) (hQe : 0 < Qe)
   (hVc : 0 < Vc) (hVl : 0 < Vl) (hVp : 0 < Vp) (hVe : 0 < Ve)
   (hKpl : 0 < Kpl) (hKpp : 0 < Kpp) (hKpe : 0 < Kpe)
-  (hCL : 0 ≤ CL)
+  (hCL : 0 ≤ CL) (hCLint : 0 ≤ CLint) (hfu : 0 ≤ fu_liver) (hcyp : 0 ≤ cyp_activity)
   {y : Fin 6 → ℝ} (hy : NonNegVec y) :
-  totalMass (mulVec (extracted_matrix ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL) y) ≤ 0 := by
+  totalMass (mulVec (extracted_matrix ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL CLint fu_liver cyp_activity) y) ≤ 0 := by
   exact mass_dissipation_rate
-    (veritrial_compartmental ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL
-      hka hQl hQp hQe hVc hVl hVp hVe hKpl hKpp hKpe hCL).isMetzler
-    (veritrial_compartmental ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL
-      hka hQl hQp hQe hVc hVl hVp hVe hKpl hKpp hKpe hCL).hasNonposColSums
+    (veritrial_compartmental ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL CLint fu_liver cyp_activity
+      hka hQl hQp hQe hVc hVl hVp hVe hKpl hKpp hKpe hCL hCLint hfu hcyp).isMetzler
+    (veritrial_compartmental ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL CLint fu_liver cyp_activity
+      hka hQl hQp hQe hVc hVl hVp hVe hKpl hKpp hKpe hCL hCLint hfu hcyp).hasNonposColSums
     hy
 
 /-- Unified extension matrix: the top-left block is the extracted model. -/
-noncomputable def extracted_dili_matrix (ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL
+noncomputable def extracted_dili_matrix (ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL CLint fu_liver cyp_activity
     k_synth k_deplete IC50 k_leak k_elim ALT_base : ℝ) :
     Fin 9 → Fin 9 → ℝ := fun i j =>
   if h : i.val < 6 ∧ j.val < 6 then
-    extracted_matrix ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL ⟨i.val, by omega⟩ ⟨j.val, by omega⟩
+    extracted_matrix ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL CLint fu_liver cyp_activity ⟨i.val, by omega⟩ ⟨j.val, by omega⟩
   else 0
 
 /-- The top-left block of the unified matrix is the extracted model. -/
 theorem veritrial_dili_block
-  (ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL
+  (ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL CLint fu_liver cyp_activity
     k_synth k_deplete IC50 k_leak k_elim ALT_base : ℝ)
   (i j : Fin 6) :
-  extracted_dili_matrix ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL
+  extracted_dili_matrix ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL CLint fu_liver cyp_activity
       k_synth k_deplete IC50 k_leak k_elim ALT_base
       ⟨i.val, by omega⟩ ⟨j.val, by omega⟩
-    = extracted_matrix ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL i j := by
+    = extracted_matrix ka Ql Qp Qe Vc Vl Vp Ve Kpl Kpp Kpe CL CLint fu_liver cyp_activity i j := by
   unfold extracted_dili_matrix
   split_ifs with h
   · rfl
