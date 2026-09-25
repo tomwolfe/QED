@@ -11,4 +11,4 @@ verification:
   commands: []
 adapters:
   opencode:
-    command: ["opencode", "run", "-m", "opencode/mimo-v2.5-free", "{prompt}"]
+    command: ["opencode", "run", "-m", "opencode/space-bunny-free", "{prompt}"]
