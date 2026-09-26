@@ -152,21 +152,91 @@ class Imp(ASTNode):
     def __repr__(self) -> str:
         return 'Imp(' + str(self.left) + ', ' + str(self.right) + ')'
 
+# Characters that may occur inside an identifier ("word").  Every implicit
+# multiplication rule below must fire only at *word boundaries*: without the
+# lookbehind/lookahead on this class, multi-character names are shredded
+# (``ka_rate`` -> ``k * a_rate``, ``A_1ab`` -> ``A_1 * a * b``,
+# ``a_bc`` -> ``a_b * c``), which silently changes the parsed statement.
+# The backslash keeps unexpanded LaTeX macros (``\alpha``) from being split
+# into letter pairs.
+_WORD = r'A-Za-z0-9_\\'
+
+
+def _expand_frac_braces(expr: str) -> str:
+    """Rewrite braced ``\\frac{num}{den}`` into ``(num) / (den)``.
+
+    Parentheses preserve the grouping the fraction denotes, so the generic
+    expression grammar can consume the result.
+    """
+    result = expr
+    for _ in range(8):  # bounded: nested fractions converge quickly
+        match = re.search(r'\\frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}', result)
+        if not match:
+            break
+        numerator, denominator = match.group(1), match.group(2)
+        replacement = '(' + numerator + ') / (' + denominator + ')'
+        result = result[:match.start()] + replacement + result[match.end():]
+    return result
+
+
+def expand_latex_macros(expr: str) -> str:
+    """Expand LaTeX-like macros into the plain operator vocabulary.
+
+    Must run *before* implicit-multiplication normalization, otherwise the
+    two-letter macros are shredded by the letter-pair rule
+    (``a \\le b`` -> ``['a', 'l', '*', 'e', 'b']``).
+
+    Handles ``\\frac{a}{b}``, ``\\cdot``/``\\times``, ``\\div``,
+    ``\\le``/``\\leq``, ``\\ge``/``\\geq``, ``\\neq``/``\\ne``,
+    ``\\left``/``\\right`` and thin spaces.
+    """
+    result = _expand_frac_braces(expr)
+    # Longest macros first: ``\leq`` must win over ``\le``.
+    replacements = [
+        ('\\\\left', ''),
+        ('\\\\right', ''),
+        ('\\\\cdot', '*'),
+        ('\\\\times', '*'),
+        ('\\\\div', '/'),
+        ('\\\\leq', '<='),
+        ('\\\\geq', '>='),
+        ('\\\\le', '<='),
+        ('\\\\ge', '>='),
+        ('\\\\neq', '!='),
+        ('\\\\ne', '!='),
+        ('\\\\,', ' '),
+        ('\\\\;', ' '),
+        ('\\\\!', ' '),
+        ('\\\\ ', ' '),
+    ]
+    for pattern, replacement in replacements:
+        result = re.sub(pattern, replacement, result)
+    return result
+
+
 def normalize_implicit_multiplication_expression(expr: str) -> str:
     """Normalize implicit multiplication in a raw expression string.
-    
+
     Handles cases like:
     - '2a' -> '2 * a' (number followed by variable)
     - 'ab' -> 'a * b' (two single-letter variables)
-    - 'a2' -> 'a * 2' (variable followed by number)
+    - 'a2' -> 'a * 2' (standalone variable followed by number)
     - '2ab' -> '2 * a * b' (number followed by chain of variables)
     - '3xyz' -> '3 * x * y * z' (number followed by multi-letter chain)
     - '(a+b)2' -> '(a+b) * 2' (paren followed by number)
     - '(a+b)(c+d)' -> '(a+b) * (c+d)' (paren followed by paren)
     - '2(a+b)' -> '2 * (a+b)' (number followed by paren)
     - 'a(b+c)' -> 'a * (b+c)' (variable followed by paren)
+
+    Multi-character names are preserved: the rules only fire at word
+    boundaries, so 'ka_rate', 'A_1ab', 'a_bc' and 'Nat.succ' are left intact.
+
+    Known ambiguity of the MVP input language: a *standalone* lowercase
+    letter pair is always read as a product ('ab' -> 'a * b'), so a bare
+    two-letter name such as 'ka' in '(ka + Ag)2' is still read as 'k * a'.
+    Write 'ka_rate' style names with an underscore, or an explicit ' * '.
     """
-    result = expr
+    result = expand_latex_macros(expr)
     result = result.replace('**', '^')
     result = re.sub('\\)(\\d)', ') * \\1', result)
     result = re.sub('\\)([a-zA-Z])', ') * \\1', result)
@@ -178,39 +248,52 @@ def normalize_implicit_multiplication_expression(expr: str) -> str:
         num = match.group(1)
         letters = match.group(2)
         return num + ' * ' + ' * '.join(letters)
-    result = re.sub('(\\d+)([a-z]{2,})(?![a-zA-Z])', _split_chain, result)
+    result = re.sub('(?<![' + _WORD + '])(\\d+)([a-z]{2,})(?![a-zA-Z])', _split_chain, result)
     changed = True
     while changed:
         changed = False
-        new_result = re.sub('(\\d)([a-zA-Z])', '\\1 * \\2', result)
+        new_result = re.sub('(?<![' + _WORD + '])(\\d)([a-zA-Z])', '\\1 * \\2', result)
         if new_result != result:
             changed = True
         result = new_result
     changed = True
     while changed:
         changed = False
-        new_result = re.sub('([a-zA-Z])(\\d)(?!\\w)', '\\1 * \\2', result)
+        new_result = re.sub('(?<![' + _WORD + '])([a-zA-Z])(\\d)(?!\\w)', '\\1 * \\2', result)
         if new_result != result:
             changed = True
         result = new_result
     changed = True
     while changed:
         changed = False
-        new_result = re.sub('(?<![a-zA-Z])([a-z])([a-z])(?![a-zA-Z])', '\\1 * \\2', result)
+        new_result = re.sub(
+            '(?<![' + _WORD + '])([a-z])([a-z])(?![' + _WORD + '])', '\\1 * \\2', result)
         if new_result != result:
             changed = True
         result = new_result
     return result
 
+
 def tokenize(expression: str) -> List[str]:
     """Tokenize a mathematical expression string into tokens."""
     expr = normalize_implicit_multiplication_expression(expression)
-    replacements = [('\\\\cdot', '*'), ('\\\\le', '<='), ('\\\\ge', '>='), ('\\\\neq', '!=')]
-    for pattern, replacement in replacements:
-        expr = re.sub(pattern, replacement, expr)
     token_pattern = '\n        \\d+                  # integers\n        | [a-zA-Z_]\\w*(?:\\.[a-zA-Z_]\\w*)*   # variables/identifiers (dotted like Nat.succ)\n        | [+\\-*/^=!<>]       # operators\n        | \\(|\\)              # parentheses\n        | <=|>=|!=           # multi-char operators\n    '
     tokens = re.findall(token_pattern, expr, re.VERBOSE)
     return tokens
+
+def _is_identifier_token(token: str) -> bool:
+    """Return True if *token* is an identifier (plain, underscored or dotted).
+
+    ``Nat.succ``, ``A_1`` and ``ka_rate`` are single operands; the previous
+    ``str.isalpha()`` test reported False for all of them, so the adjacency
+    rule silently dropped the following token (``Nat.succ 0`` lost its ``0``).
+    """
+    if not token:
+        return False
+    if not (token[0].isalpha() or token[0] == '_'):
+        return False
+    return all((c.isalnum() or c in '_.' for c in token))
+
 
 def normalize_implicit_multiplication(tokens: List[str]) -> List[str]:
     """Normalize implicit multiplication like '2ab' -> '2 * a * b'."""
@@ -223,16 +306,16 @@ def normalize_implicit_multiplication(tokens: List[str]) -> List[str]:
             next_token = tokens[i + 1]
             should_multiply = False
             if token == ')':
-                if next_token.isdigit() or next_token.isalpha() or next_token == '(':
+                if next_token.isdigit() or _is_identifier_token(next_token) or next_token == '(':
                     should_multiply = True
             elif token.isdigit():
-                if next_token.isalpha() or next_token == '(':
+                if _is_identifier_token(next_token) or next_token == '(':
                     should_multiply = True
             elif token.startswith('-') and token[1:].isdigit():
-                if next_token.isalpha() or next_token == '(':
+                if _is_identifier_token(next_token) or next_token == '(':
                     should_multiply = True
-            elif token.isalpha() or (token.startswith('_') and token[1:].isalpha()):
-                if next_token.isalpha() or next_token.isdigit() or next_token == '(':
+            elif _is_identifier_token(token):
+                if _is_identifier_token(next_token) or next_token.isdigit() or next_token == '(':
                     should_multiply = True
             if should_multiply:
                 normalized.append('*')
@@ -247,31 +330,47 @@ def parse_expression(tokens: List[str], pos: int=0) -> Tuple[Optional[ASTNode], 
     term := factor (('*' | '/') factor)*
     factor := primary ('^' primary)?
     primary := number | variable | '(' expression ')' | '-' primary
+
+    A malformed operand yields ``None`` (fail closed) instead of a half-built
+    ``BinOp`` whose child is ``None``; the failure then propagates to the
+    caller so ``parse_equation`` can reject the whole statement.
     """
     left, pos = parse_term(tokens, pos)
+    if left is None:
+        return (None, pos)
     while pos < len(tokens) and tokens[pos] in ('+', '-'):
         op = tokens[pos]
         pos += 1
         right, pos = parse_term(tokens, pos)
+        if right is None:
+            return (None, pos)
         left = BinOp(cast(ASTNode, left), op, cast(ASTNode, right))
     return (left, pos)
 
 def parse_term(tokens: List[str], pos: int=0) -> Tuple[Optional[ASTNode], int]:
     """Parse a term (handles * and /)."""
     left, pos = parse_factor(tokens, pos)
+    if left is None:
+        return (None, pos)
     while pos < len(tokens) and tokens[pos] in ('*', '/'):
         op = tokens[pos]
         pos += 1
         right, pos = parse_factor(tokens, pos)
+        if right is None:
+            return (None, pos)
         left = BinOp(cast(ASTNode, left), op, cast(ASTNode, right))
     return (left, pos)
 
 def parse_factor(tokens: List[str], pos: int=0) -> Tuple[Optional[ASTNode], int]:
     """Parse a factor (handles ^)."""
     primary, pos = parse_primary(tokens, pos)
+    if primary is None:
+        return (None, pos)
     while pos < len(tokens) and tokens[pos] == '^':
         pos += 1
         right, pos = parse_primary(tokens, pos)
+        if right is None:
+            return (None, pos)
         primary = BinOp(cast(ASTNode, primary), '^', cast(ASTNode, right))
     return (primary, pos)
 
@@ -283,34 +382,55 @@ def parse_primary(tokens: List[str], pos: int=0) -> Tuple[Optional[ASTNode], int
     if token == '(':
         pos += 1
         inner_expr, pos = parse_expression(tokens, pos)
+        if inner_expr is None:
+            # Empty '()' or a malformed inner expression: fail closed.
+            return (None, pos)
         if pos < len(tokens) and tokens[pos] == ')':
             pos += 1
             return (inner_expr, pos)
+        # Unbalanced '(': fail closed rather than returning a half-parsed node.
         return (None, pos)
     elif token.isdigit() or (token.startswith('-') and token[1:].isdigit()):
         value = int(token)
         return (Num(value), pos + 1)
-    elif token[0].isalpha() and all((c.isalnum() or c in '_.-' for c in token)):
+    elif _is_identifier_token(token):
         var_name = token
         return (Var(var_name), pos + 1)
     elif token == '-':
         if pos + 1 < len(tokens):
             next_token = tokens[pos + 1]
-            if next_token.isdigit() or (next_token.startswith('-') and next_token[1:].isdigit()) or (next_token.isalpha() or (next_token.startswith('_') and next_token[1:].isalpha())) or (next_token == '('):
+            if next_token.isdigit() or (next_token.startswith('-') and next_token[1:].isdigit()) or _is_identifier_token(next_token) or (next_token == '('):
                 expr, pos = parse_primary(tokens, pos + 1)
                 if expr is not None:
                     return (Neg(expr), pos)
     return (None, pos + 1)
+
+
+def _parse_side(text: str) -> Optional[ASTNode]:
+    """Parse one side of a relation, requiring the whole side to be consumed.
+
+    Trailing garbage (``(a+b))``, a dangling operator (``1 +``) or an empty
+    side (``(a+) = 1``) all return ``None`` so the caller fails closed.
+    """
+    side_tokens = normalize_implicit_multiplication(tokenize(text))
+    if not side_tokens:
+        return None
+    side, pos = parse_expression(side_tokens)
+    if side is None or pos != len(side_tokens):
+        return None
+    return side
 
 def parse_equation(expression: str) -> Tuple[Optional[ASTNode], Optional[List[str]]]:
     """Parse a mathematical equation/inequality expression.
     
     Returns:
         (parsed node, list of free variable names)
+
+    Fails closed: a side that does not parse *completely* (unbalanced or
+    empty parentheses, a dangling operator, trailing tokens) yields
+    ``(None, free_vars)`` rather than a relation node with missing children.
     """
-    tokens = tokenize(expression)
-    tokens = normalize_implicit_multiplication(tokens)
-    normalized = expression.strip()
+    normalized = expand_latex_macros(expression.strip())
     rel_op = None
     rel_patterns = ['!=', '>=', '<=', '<', '>']
     for op in rel_patterns:
@@ -328,21 +448,23 @@ def parse_equation(expression: str) -> Tuple[Optional[ASTNode], Optional[List[st
             left_text = normalized[:match.start()].strip()
             right_text = normalized[match.end():].strip()
     if rel_op is None:
+        # Bare expression: no relation node, but still report free variables
+        # so the caller can validate/reject the input.
+        tokens = normalize_implicit_multiplication(tokenize(expression))
         left, pos = parse_expression(tokens)
-        free_vars = extract_free_variables(left)
-        return (None, free_vars)
-    left_tokens = tokenize(left_text)
-    left_tokens = normalize_implicit_multiplication(left_tokens)
-    left, _ = parse_expression(left_tokens)
-    right_tokens = tokenize(right_text)
-    right_tokens = normalize_implicit_multiplication(right_tokens)
-    right, _ = parse_expression(right_tokens)
+        if left is None or pos != len(tokens):
+            return (None, [])
+        return (None, extract_free_variables(left))
+    left = _parse_side(left_text)
+    right = _parse_side(right_text)
     left_vars = extract_free_variables(left)
     right_vars = extract_free_variables(right)
     free_vars = sorted(list(set(left_vars + right_vars)))
+    if left is None or right is None:
+        return (None, free_vars)
     rel_nodes = {'=': Eq, '!=': Ne, '<': Lt, '<=': Le, '>': Gt, '>=': Ge}
     node_cls = rel_nodes.get(rel_op, Eq)
-    eq = node_cls(cast(ASTNode, left), cast(ASTNode, right))
+    eq = node_cls(left, right)
     return (eq, free_vars)
 
 def parse_ode(expression: str) -> Tuple[Optional[ODE], Optional[List[str]]]:
@@ -366,10 +488,9 @@ def parse_ode(expression: str) -> Tuple[Optional[ODE], Optional[List[str]]]:
     rhs_text = match.group(2).strip()
     if not rhs_text:
         return (None, None)
-    rhs_tokens = tokenize(rhs_text)
-    rhs_tokens = normalize_implicit_multiplication(rhs_tokens)
-    rhs, _ = parse_expression(rhs_tokens)
-    if rhs is None:
+    rhs_tokens = normalize_implicit_multiplication(tokenize(rhs_text))
+    rhs, pos = parse_expression(rhs_tokens)
+    if rhs is None or pos != len(rhs_tokens):
         return (None, None)
     free_vars = extract_free_variables(rhs)
     return (ODE(var, rhs), free_vars)
@@ -775,11 +896,37 @@ def ast_to_latex(node: Optional[ASTNode]) -> str:
         return f'd{node.var}/dt = {ast_to_latex(node.rhs)}'
     return ''
 
+def canonical_form(node: Optional[ASTNode]) -> str:
+    """Render an AST as an unambiguous, fully parenthesized canonical string.
+
+    ``ast_to_latex`` deliberately emits no parentheses (it is a display
+    renderer), so it is lossy: ``(a + b) * c`` and ``a + b * c`` both render as
+    ``a + b * c``.  Structural comparison must not use it, otherwise
+    ``(a + b) * c = a + b * c`` — a *false* statement — is classified as an
+    identity and the pipeline short-circuits it with ``rfl``.
+    """
+    if node is None:
+        return '<none>'
+    if isinstance(node, Num):
+        return str(node.value)
+    if isinstance(node, Var):
+        return node.name
+    if isinstance(node, Neg):
+        return '(-' + canonical_form(node.expr) + ')'
+    if isinstance(node, BinOp):
+        return '(' + canonical_form(node.left) + ' ' + node.op + ' ' + canonical_form(node.right) + ')'
+    if isinstance(node, ODE):
+        return 'd' + node.var + '/dt=' + canonical_form(node.rhs)
+    if isinstance(node, (Eq, Ne, Lt, Le, Gt, Ge)):
+        op = {Eq: '=', Ne: '!=', Lt: '<', Le: '<=', Gt: '>', Ge: '>='}[type(node)]
+        return '(' + canonical_form(node.left) + op + canonical_form(node.right) + ')'
+    return ''
+
 def _is_identity(node: ASTNode) -> bool:
     """Return True if the Eq node represents a structural identity (left == right)."""
     if not isinstance(node, Eq):
         return False
-    return ast_to_latex(node.left) == ast_to_latex(node.right)
+    return canonical_form(node.left) == canonical_form(node.right)
 
 def _is_numeric_only(node: ASTNode) -> bool:
     """Return True if the AST contains only numeric literals and operators (no variables)."""

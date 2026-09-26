@@ -2016,3 +2016,245 @@ def test_repair_prompt_falls_back_to_passed_goal_when_stderr_has_none() -> None:
         "error: something else entirely", "a + b = b + a",
     )
     assert "⊢ a + b = b + a" in prompt
+
+
+# ---------------------------------------------------------------------------
+# qed-02-parser-hardening: implicit multiplication + nested parenthesis handling
+#
+# These are fast (no-Lean) unit tests pinning the five parser defects that let a
+# *different statement* reach Lean than the user wrote:
+#   1. word boundaries  - multi-character names were shredded (ka_rate -> k * a_rate)
+#   2. LaTeX expansion  - macros were expanded *after* implicit-mul, so \le became
+#                         ['l','*','e'] and \frac became a variable named 'frac'
+#   3. identity check   - ast_to_latex emits no parens, so (a + b) * c compared
+#                         equal to a + b * c and took the `rfl` short-circuit
+#   4. fail closed      - malformed/nested parens produced Eq(None, ...) nodes
+#   5. identifiers      - dotted/underscored operands lost the token after them
+#                         (Nat.succ 0 silently dropped the 0)
+# ---------------------------------------------------------------------------
+
+from parser import (  # noqa: E402
+    canonical_form,
+    expand_latex_macros,
+)
+
+
+# --- 1. word boundaries: identifiers must survive normalization intact ---
+
+def test_normalize_preserves_snake_case_identifier() -> None:
+    """'ka_rate' was shredded to 'k * a_rate' because the letter-pair rule used
+    [a-zA-Z] as its word class, which excludes '_'."""
+    from parser import normalize_implicit_multiplication_expression as n
+    assert n('ka_rate * Ag') == 'ka_rate * Ag'
+
+
+def test_normalize_preserves_underscored_identifier_suffix() -> None:
+    """'a_bc' was split to 'a_b * c' for the same reason."""
+    from parser import normalize_implicit_multiplication_expression as n
+    assert n('a_bc') == 'a_bc'
+    assert n('x_1 + y_2') == 'x_1 + y_2'
+
+
+def test_normalize_preserves_subscripted_name_before_product() -> None:
+    """'A_1ab' must not decay to 'A_1 * a * b'."""
+    from parser import normalize_implicit_multiplication_expression as n
+    assert n('A_1ab') == 'A_1ab'
+    assert n('(A_1 + A_2)2') == '(A_1 + A_2) * 2'
+
+
+def test_normalize_does_not_split_inside_alphabetic_name() -> None:
+    """A digit or letter may not split off the tail of a longer name."""
+    from parser import normalize_implicit_multiplication_expression as n
+    assert n('Nat2') == 'Nat2'
+    assert n('a1b') == 'a1b'
+    assert n('2_3') == '2_3'
+
+
+def test_normalize_keeps_pinned_products_after_boundary_fix() -> None:
+    """The boundary lookarounds must not weaken genuine implicit products."""
+    from parser import normalize_implicit_multiplication_expression as n
+    assert n('2a') == '2 * a'
+    assert n('2ab') == '2 * a * b'
+    assert n('3xyz') == '3 * x * y * z'
+    assert n('ab') == 'a * b'
+    assert n('ab + cd') == 'a * b + c * d'
+    assert n('(a+b)^2 = a^2 + 2ab + b^2') == '(a+b)^2 = a^2 + 2 * a * b + b^2'
+    assert n('Nat + x') == 'Nat + x'
+    assert n('Vmax * C / (Km + C)') == 'Vmax * C / (Km + C)'
+
+
+def test_underscored_names_survive_full_parse() -> None:
+    """The free-variable set must report 'ka_rate' as one name, not 'k'."""
+    from parser import parse_equation
+    eq, free_vars = parse_equation('ka_rate * Ag = 1')
+    assert eq is not None
+    assert free_vars == ['Ag', 'ka_rate']
+
+
+# --- 2. LaTeX-like tokens: expansion must precede implicit multiplication ---
+
+def test_latex_relation_macros_are_not_split_into_letters() -> None:
+    """'a \\le b' used to tokenize as ['a', 'l', '*', 'e', 'b'] because the
+    letter-pair rule ran before macro expansion."""
+    assert tokenize('a \\le b') == ['a', '<', '=', 'b']
+    assert tokenize('a \\ge b') == ['a', '>', '=', 'b']
+    assert tokenize('a \\leq b') == ['a', '<', '=', 'b']
+    assert tokenize('a \\geq b') == ['a', '>', '=', 'b']
+    assert tokenize('a \\neq b') == ['a', '!', '=', 'b']
+
+
+def test_latex_operator_macros_expand() -> None:
+    assert tokenize('a \\cdot b = c') == ['a', '*', 'b', '=', 'c']
+    assert tokenize('a \\times b = c') == ['a', '*', 'b', '=', 'c']
+    assert tokenize('a \\div b = c') == ['a', '/', 'b', '=', 'c']
+
+
+def test_latex_frac_expands_to_division() -> None:
+    """'\\frac{a}{b}' used to tokenize as the variable 'frac'."""
+    assert tokenize('\\frac{a}{b} = c') == ['(', 'a', ')', '/', '(', 'b', ')', '=', 'c']
+    eq, free_vars = parse_equation('\\frac{a}{b} = c')
+    assert eq is not None
+    assert canonical_form(eq) == '((a / b)=c)'
+    assert free_vars == ['a', 'b', 'c']
+
+
+def test_latex_frac_preserves_grouping() -> None:
+    eq, _ = parse_equation('\\frac{a + b}{c} = d')
+    assert eq is not None
+    assert canonical_form(eq) == '(((a + b) / c)=d)'
+
+
+def test_latex_relation_macros_reach_statement_kind() -> None:
+    """The relation must be found on the expanded string, not the raw one."""
+    assert statement_kind('a \\le b') == 'inequality'
+    assert statement_kind('a \\geq b') == 'inequality'
+    eq, _ = parse_equation('a \\neq b')
+    assert eq is not None and is_inequality(eq) is True
+
+
+def test_latex_delimiters_and_thin_spaces_expand() -> None:
+    assert expand_latex_macros('a \\left( b \\right)') == 'a ( b )'
+    assert expand_latex_macros('a \\, b') == 'a   b'
+    assert tokenize('a \\cdot (b + c) = d') == ['a', '*', '(', 'b', '+', 'c', ')', '=', 'd']
+
+
+# --- 3. structural identity must not depend on the display renderer ---
+
+def test_canonical_form_distinguishes_parenthesized_products() -> None:
+    """ast_to_latex is a lossy display renderer; canonical_form is not."""
+    from parser import ast_to_latex, canonical_form as cf
+    left, _ = parse_equation('(a + b) * c = a')
+    right, _ = parse_equation('a + b * c = a')
+    # The display renderer collapses both to the same string ...
+    assert ast_to_latex(left.left) == ast_to_latex(right.left)
+    # ... but the canonical form must keep them apart.
+    assert cf(left.left) != cf(right.left)
+
+
+def test_statement_kind_is_not_identity_for_false_distributive_claim() -> None:
+    """'(a + b) * c = a + b * c' is FALSE; classifying it as 'identity' sent the
+    pipeline down the `rfl` short-circuit, i.e. a silent pass."""
+    assert statement_kind('(a + b) * c = a + b * c') == 'equality'
+    assert statement_kind('x * (y + 1) = x * y + x') == 'equality'
+    assert statement_kind('3 * (5 - 4 / 2) = 3 * 5 - 3 * 4 / 2') == 'equality'
+
+
+def test_statement_kind_still_reports_true_identities() -> None:
+    """The structural comparison must keep recognizing real identities."""
+    assert statement_kind('x = x') == 'identity'
+    assert statement_kind('a + b = a + b') == 'identity'
+    assert statement_kind('ab = a * b') == 'identity'
+    assert statement_kind('x * 1 = x * 1') == 'identity'
+    assert statement_kind('x^1 = x^1') == 'identity'
+
+
+def test_identity_short_circuit_not_reachable_for_false_statement() -> None:
+    """End-to-end: a false distributive claim must take the same tactic path as
+    any other non-identity equality, and must NOT take the identity
+    short-circuit (which appends 'refl' and tries rfl-first)."""
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline()
+    identity_cands = pipeline.get_tactic_candidates('a + b = a + b')
+    false_cands = pipeline.get_tactic_candidates('(a + b) * c = a + b * c')
+    true_equality_cands = pipeline.get_tactic_candidates('x * (y + 1) = x * y + x')
+    # The identity short-circuit has a distinct signature; it must not fire.
+    assert false_cands != identity_cands
+    # ... and the false statement is classified exactly like a real equality.
+    assert false_cands == true_equality_cands
+
+
+# --- 4. malformed / nested / unbalanced parentheses must fail closed ---
+
+def test_malformed_paren_equations_fail_closed() -> None:
+    """These used to build Eq(None, ...) nodes, so codegen emitted a theorem
+    statement with an empty left-hand side."""
+    for expr in ['(a+) = 1', '(()) = 1', '((a+b) = 1', 'a = (b', '(a', '()',
+                 '*a = b', '2( = 1', 'x = 1 +', '(a)( = 1']:
+        eq, _ = parse_equation(expr)
+        assert eq is None, expr
+        assert statement_kind(expr) == 'other', expr
+
+
+def test_trailing_tokens_fail_closed() -> None:
+    """Leftover tokens were silently discarded, changing the statement."""
+    eq, _ = parse_equation('(a+b)) = 1')
+    assert eq is None
+    eq, _ = parse_equation('(a+b)) * c = 1')
+    assert eq is None
+    # A second relation operator is not silently dropped either.
+    eq, _ = parse_equation('a < b < c')
+    assert eq is None
+
+
+def test_malformed_input_is_rejected_by_the_validator() -> None:
+    """Fail-closed must reach the pipeline: unparseable input is not 'valid'."""
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline()
+    is_valid, reason = pipeline.validate_input('(a+) = 1')
+    assert is_valid is False
+    assert 'parse' in reason.lower()
+
+
+def test_malformed_ode_fails_closed() -> None:
+    assert parse_ode('dA/dt = (1 + )') == (None, None)
+    assert parse_ode('dA/dt = (1 + 2') == (None, None)
+
+
+def test_wellformed_nested_parens_still_parse() -> None:
+    """Fail-closed must not break well-formed nesting."""
+    eq, _ = parse_equation('((a + b)) = (c)')
+    assert eq is not None
+    assert canonical_form(eq) == '((a + b)=c)'
+    eq, _ = parse_equation('(3 + 1 * (-6)) + (5 + 1 * (9)) = 21')
+    assert eq is not None
+
+
+# --- 5. dotted / underscored operands keep the token that follows them ---
+
+def test_dotted_identifier_does_not_swallow_its_argument() -> None:
+    """'Nat.succ 0' silently dropped the 0, yielding the statement 'Nat.succ = 1'."""
+    from parser import normalize_implicit_multiplication as nim
+    assert nim(tokenize('Nat.succ 0')) == ['Nat.succ', '*', '0']
+    eq, free_vars = parse_equation('Nat.succ 0 = 1')
+    assert eq is not None
+    assert canonical_form(eq) == '((Nat.succ * 0)=1)'
+    assert free_vars == ['Nat.succ']
+
+
+def test_underscored_identifier_adjacency_is_explicit_multiplication() -> None:
+    from parser import normalize_implicit_multiplication as nim
+    assert nim(tokenize('A_1 (2)')) == ['A_1', '*', '(', '2', ')']
+    assert nim(tokenize('x_1 y_2')) == ['x_1', '*', 'y_2']
+
+
+def test_digit_adjacency_to_identifier_is_multiplication() -> None:
+    from parser import normalize_implicit_multiplication as nim
+    assert nim(tokenize('2 A_1')) == ['2', '*', 'A_1']
+    assert nim(tokenize('(a+b) A_1')) == ['(', 'a', '+', 'b', ')', '*', 'A_1']
+
+
+def test_ode_with_underscored_names_parses() -> None:
+    ode, free_vars = parse_ode('dA_1/dt = -k_1 * A_1')
+    assert ode is not None
+    assert ode.var == 'A_1'
+    assert free_vars == ['A_1', 'k_1']
