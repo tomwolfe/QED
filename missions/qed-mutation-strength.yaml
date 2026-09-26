@@ -44,7 +44,8 @@ verification:
 recovery:
   max_attempts: 3
 budget:
-  max_sends: 10
+  max_wall_seconds: 5400
+  max_sends: 24
 adapter: opencode
 adapters:
   opencode:

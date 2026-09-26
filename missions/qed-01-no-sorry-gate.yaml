@@ -30,8 +30,7 @@ review:
   adapter: opencode
 
 budget:
-  max_sends: 15
-  max_wall_seconds: 1800
-
+  max_sends: 24
+  max_wall_seconds: 5400
 adapter: opencode
 git_state_guard: true

@@ -36,7 +36,8 @@ context_files:
 recovery:
   max_attempts: 3
 budget:
-  max_sends: 12
+  max_wall_seconds: 5400
+  max_sends: 24
 adapter: command
 adapters:
   opencode:
