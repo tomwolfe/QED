@@ -1929,3 +1929,90 @@ def test_ood_matrix_entry_equality() -> None:
     from parser import parse_equation, is_matrix_entry_equality
     node, _ = parse_equation("K11 + K12 = K11 + K12")
     assert node is not None
+
+
+# --- Exact-goal extraction for the agentic repair prompt ---
+
+def test_extract_goal_context_reads_goal_and_hypotheses() -> None:
+    """The repair prompt must show the model the goal Lean actually reported,
+    hypotheses included. Reconstructing it from the theorem statement loses the
+    context that made ring/positivity/field_simp fail."""
+    from agentic_pipeline import LeanAgenticPipeline
+    stderr = (
+        "example (hq : 0 < Q) (hv : 0 < V) : 0 < Q / V := by\n"
+        "  sorry\n"
+        "error: unsolved goals\n"
+        "context:\n"
+        "hq : 0 < Q\n"
+        "hv : 0 < V\n"
+        "⊢ 0 < Q / V\n"
+    )
+    goal, hyps = LeanAgenticPipeline._extract_goal_context(stderr)
+    assert goal == "0 < Q / V"
+    assert hyps == ["hq : 0 < Q", "hv : 0 < V"]
+
+
+def test_extract_goal_context_keeps_wrapped_multiline_goals() -> None:
+    """Lean wraps long goals onto indented continuation lines; taking only the
+    first line after ⊢ would hand the adapter a truncated, unprovable goal."""
+    from agentic_pipeline import LeanAgenticPipeline
+    stderr = (
+        "error: unsolved goals\n"
+        "⊢ ∀ (x : ℝ), x + 0 = x ∧\n"
+        "  x = x\n"
+        "next message\n"
+    )
+    goal, _ = LeanAgenticPipeline._extract_goal_context(stderr)
+    assert goal == "∀ (x : ℝ), x + 0 = x ∧\n  x = x"
+
+
+def test_extract_goal_context_prefers_the_last_goal() -> None:
+    """A theorem compiles as statement-then-goal, so only the LAST ⊢ is the
+    unsolved one; the header's ⊢ must not win."""
+    from agentic_pipeline import LeanAgenticPipeline
+    stderr = (
+        "example : 0 < Q / V := by\n"
+        "⊢ 0 < Q / V\n"
+        "error: unsolved goals\n"
+        "context:\n"
+        "hv : 0 < V\n"
+        "⊢ 0 < Q / V ∧ 0 < V\n"
+    )
+    goal, hyps = LeanAgenticPipeline._extract_goal_context(stderr)
+    assert goal == "0 < Q / V ∧ 0 < V"
+    assert hyps == ["hv : 0 < V"]
+
+
+def test_extract_goal_context_without_turnstile_is_none() -> None:
+    from agentic_pipeline import LeanAgenticPipeline
+    assert LeanAgenticPipeline._extract_goal_context("no goal here") == (None, [])
+
+
+def test_repair_prompt_states_the_exact_goal_not_the_reconstructed_one() -> None:
+    """The whole point of the hardening: the adapter is told the deterministic
+    candidates already failed, and is given the verbatim goal block."""
+    from agentic_pipeline import LeanAgenticPipeline
+    stderr = (
+        "error: unsolved goals\n"
+        "context:\n"
+        "hq : 0 < Q\n"
+        "⊢ 0 < Q / V\n"
+    )
+    pipeline = LeanAgenticPipeline(adapter=None)
+    prompt = pipeline._construct_repair_prompt(
+        "STALE-FALLBACK-GOAL", "example : True := by\n", stderr, "0 < Q / V",
+    )
+    assert "⊢ 0 < Q / V" in prompt
+    assert "STALE-FALLBACK-GOAL" not in prompt
+    assert "hq : 0 < Q" in prompt
+    assert "ring, positivity, field_simp" in prompt
+
+
+def test_repair_prompt_falls_back_to_passed_goal_when_stderr_has_none() -> None:
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline(adapter=None)
+    prompt = pipeline._construct_repair_prompt(
+        "a + b = b + a", "theorem q : a + b = b + a := by\n",
+        "error: something else entirely", "a + b = b + a",
+    )
+    assert "⊢ a + b = b + a" in prompt

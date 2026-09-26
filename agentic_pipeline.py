@@ -402,12 +402,82 @@ class LeanAgenticPipeline:
         """Extract the proof goal after the turnstile (⊢) from Lean 4 compiler stderr.
 
         Returns the goal text (without the ⊢ prefix) or None if no goal is found.
+        Delegates to :meth:`_extract_goal_context` so the call site and the
+        adapter prompt always agree on what "the goal" is -- including goals
+        that Lean's pretty-printer wrapped onto several lines.
         """
-        # Lean 4 error messages embed the goal after ⊢ on the same or next line
-        match = re.search(r'⊢\s*(.+?)(?:\n|$)', stderr)
-        if match:
-            return match.group(1).strip()
-        return None
+        goal, _hyps = LeanAgenticPipeline._extract_goal_context(stderr)
+        return goal
+
+    @staticmethod
+    def _extract_goal_context(error_output: str) -> Tuple[Optional[str], List[str]]:
+        """Extract the *exact* unsolved goal and its local hypotheses.
+
+        Lean's "unsolved goals" block is the ground truth about what is left to
+        prove:
+
+            error: unsolved goals
+            context:
+            hq : 0 < Q
+            hv : 0 < V
+            ⊢ Q / V > 0
+
+        Reconstructing the goal from the theorem statement instead (as the
+        adapter prompt used to) loses every hypothesis, so the adapter is
+        asked to close a goal it cannot possibly see. Reading the block
+        verbatim gives the model exactly the context Lean has.
+
+        Returns ``(goal, hypotheses)``; ``goal`` is None when no ``⊢`` is
+        present. The goal may be multi-line (Lean's pretty-printer wraps long
+        goals onto indented continuation lines), so the whole block is kept.
+        """
+        if not error_output:
+            return None, []
+
+        lines = error_output.splitlines()
+        # Prefer the LAST goal: a theorem is compiled statement-then-goal, and
+        # earlier ⊢ occurrences belong to the declaration header.
+        idx = None
+        for i, line in enumerate(lines):
+            if "⊢" in line:
+                idx = i
+        if idx is None:
+            return None, []
+
+        first = lines[idx].split("⊢", 1)[1].strip()
+        goal_parts = [first] if first else []
+        for line in lines[idx + 1:]:
+            # A goal continuation is an indented, non-empty line. Anything
+            # else starts the next compiler message and ends the goal.
+            if not line.strip():
+                break
+            if not line[:1].isspace():
+                break
+            if "⊢" in line or line.lstrip().startswith("error"):
+                break
+            # Keep the line's own indentation: in a wrapped Lean goal the
+            # break position is part of how the term parses, and re-indenting
+            # it would hand the adapter a differently-shaped goal.
+            goal_parts.append(line.rstrip())
+        goal = "\n".join(goal_parts).strip() or None
+
+        # Hypotheses: the `context:` block immediately preceding the goal.
+        hyps: List[str] = []
+        for line in reversed(lines[:idx]):
+            stripped = line.strip()
+            if not stripped:
+                if hyps:
+                    break
+                continue
+            if stripped.lower().startswith("context:"):
+                break
+            m = re.match(r"^[A-Za-z_][A-Za-z0-9_'.]*\s*:\s*(.+)$", stripped)
+            if m and hyps is not None:
+                hyps.append(stripped)
+                continue
+            break
+        hyps.reverse()
+        return goal, hyps
 
     def _construct_repair_prompt(
         self,
@@ -416,17 +486,44 @@ class LeanAgenticPipeline:
         error_output: str,
         expression: str,
     ) -> str:
-        """Build an agentic repair prompt from the parsed goal and error context."""
-        return (
-            "You are a Lean 4 proof assistant. The following theorem failed to compile.\n\n"
-            f"Theorem expression: {expression}\n\n"
-            f"Current Lean code:\n```lean\n{lean_code}\n```\n\n"
-            f"Compiler error (relevant excerpt):\n```\n{error_output[:2000]}\n```\n\n"
-            f"Proof goal: ⊢ {goal}\n\n"
-            "Respond with a SINGLE valid Lean tactic or tactic sequence that closes this goal. "
-            "Output ONLY the tactic text, no explanation. Examples: `ring`, `simp [foo]`, "
-            "`intro x; exact h`, `positivity`, `linarith`."
+        """Build an agentic repair prompt from the parsed goal and error context.
+
+        The exact goal Lean reported -- together with its local hypotheses -- is
+        what the adapter is asked to close. ``goal`` is only a fallback for when
+        the stderr carried no parsable goal block; the real one is recovered
+        from ``error_output`` so the model sees the hypotheses the static
+        candidates (ring / positivity / field_simp) were actually given.
+        """
+        exact_goal, hyps = self._extract_goal_context(error_output)
+        goal_text = exact_goal or goal
+        lines = [
+            "You are a Lean 4 proof assistant. The following theorem failed to compile.",
+            "",
+            f"Theorem expression: {expression}",
+            "",
+            "Current Lean code:",
+            f"```lean\n{lean_code}\n```",
+            "",
+            "Compiler error (relevant excerpt):",
+            f"```\n{error_output[:2000]}\n```",
+            "",
+        ]
+        if hyps:
+            lines.append("Local hypotheses in scope:")
+            lines.extend(f"  {h}" for h in hyps)
+            lines.append("")
+        lines.append("The EXACT goal Lean reported as unsolved (close this, verbatim):")
+        lines.append(f"⊢ {goal_text}")
+        lines.append("")
+        lines.append(
+            "The deterministic candidates (ring, positivity, field_simp, simp, "
+            "linarith) have all FAILED on this goal. Do not repeat them verbatim. "
+            "Respond with a SINGLE valid Lean tactic or tactic sequence that "
+            "closes the goal above. Output ONLY the tactic text, no explanation. "
+            "Examples: `nlinarith [sq_nonneg (x - y)]`, `field_simp` then `ring`, "
+            "`exact sub_nonneg.mpr h1`, `positivity`, `simp [h, Nat.add_comm]`."
         )
+        return "\n".join(lines)
 
     @staticmethod
     def _parse_adapter_tactic(response_text: str) -> Optional[str]:
