@@ -869,9 +869,18 @@ def test_pbpk_mass_conservation_witness_proves_no_sorry() -> None:
 
 
 def test_pbpk_gut_absorption_identity_proves() -> None:
-    res = _pbpk_run("ka * A_gut = ka * A_gut")
-    assert res["success"] is True
-    assert "sorry" not in res["lean_code"]
+    """The gut absorption identity is Real-typed, so it needs Mathlib; without
+    Mathlib (a clean-room checkout of the committed tree has no `.lake`) the
+    goal cannot compile and the pipeline must fail closed, never with sorry."""
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline(use_mathlib=True)
+    res = pipeline.run("ka * A_gut = ka * A_gut")
+    if pipeline.use_mathlib:
+        assert res["success"] is True
+        assert "sorry" not in res["lean_code"]
+    else:
+        assert res["success"] is False
+        assert "sorry" not in res.get("lean_code", "")
 
 
 def test_pbpk_ode_tactic_policy_includes_distributive_field() -> None:
@@ -1382,14 +1391,25 @@ def test_parametric_mass_conservation_proves_no_sorry() -> None:
 
 
 def test_parametric_compartmental_conservation() -> None:
-    """4-compartment flow conservation with positivity hypotheses."""
-    res = _pbpk_run(
+    """4-compartment flow conservation with positivity hypotheses.
+
+    Proving this needs Mathlib's field algebra (field_simp/ring), so with
+    Mathlib available it must prove axiom-clean, and without it must fail
+    closed with no sorry.
+    """
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline(use_mathlib=True)
+    res = pipeline.run(
         "(-ka * Ag) + (Q1 * (Cp - Ct1 / Kp1)) + (Q2 * (Cp - Ct2 / Kp2)) "
         "+ (ka * Ag - Q1 * (Cp - Ct1 / Kp1) - Q2 * (Cp - Ct2 / Kp2)) = 0"
     )
-    assert res["success"] is True
-    assert "sorry" not in res["lean_code"]
-    assert res["verification"]["axioms_check"] == "passed"
+    if pipeline.use_mathlib:
+        assert res["success"] is True
+        assert "sorry" not in res["lean_code"]
+        assert res["verification"]["axioms_check"] == "passed"
+    else:
+        assert res["success"] is False
+        assert "sorry" not in res.get("lean_code", "")
 
 
 def test_has_compartmental_structure() -> None:
