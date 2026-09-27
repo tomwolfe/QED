@@ -2461,3 +2461,191 @@ def test_a_real_refutation_is_not_labelled_infrastructure_failure(
     # The compiler answered, so this IS a verdict and keeps the old wording.
     assert res.get("infrastructure_failure") is None
     assert "No tactic succeeded" in res["error"]
+
+
+# ---------------------------------------------------------------------------
+# Tactic selection is a PURE decision, so it must be tested without a prover.
+#
+# Measured 2026-09-26: mutation kill rate for agentic_pipeline.py against this
+# suite is 1.00 (40/40) with Mathlib present, but the clean-room gate measured
+# 0.675 with 13 survivors clustered in the tactic loop. Nothing was wrong with
+# the logic -- the clean room has no `.lake`, so every prover test fails closed
+# and never reaches the dispatch. Tactic selection decides from a STRING, so
+# pinning it here makes the coverage independent of whether a compiler, a
+# toolchain or a warm cache happens to be available.
+
+
+def _sel(goal: str, expected_type: str = "") -> str:
+    from agentic_pipeline import LeanAgenticPipeline
+
+    p = LeanAgenticPipeline(use_mathlib=False, lean_path="lean")
+    return p.select_tactic({"goal": goal, "expected_type": expected_type})
+
+
+def test_select_tactic_picks_ring_for_polynomial_structure() -> None:
+    assert _sel("a + b = b + a") == "ring"
+    assert _sel("x^2 - 4 = 0") == "ring"
+
+
+def test_select_tactic_picks_field_simp_for_division_and_derivatives() -> None:
+    # A derivative goal and a bare division goal are both field identities:
+    # the divisions have to be cleared before any polynomial tactic applies.
+    assert _sel("d/dt C = (A/V) - (C/K)") == "field_simp"
+    assert _sel("A/V = C/K") == "field_simp"
+
+
+def test_select_tactic_picks_linarith_for_inequalities() -> None:
+    assert _sel("x > 0") == "linarith"
+    assert _sel("a + b <= c") == "linarith"
+
+
+def test_select_tactic_picks_norm_num_for_concrete_arithmetic() -> None:
+    assert _sel("2 + 2 = 4") == "norm_num"
+    assert _sel("f(x)*2 = 2*f(x)") == "norm_num"
+
+
+def test_select_tactic_picks_decide_for_bool_mismatch() -> None:
+    # The Bool branch is keyed on the EXPECTED TYPE, not the goal text, so a
+    # goal that looks algebraic still routes to decide when the type is Bool.
+    assert _sel("a + b = b + a", expected_type="Bool") == "decide"
+
+
+def test_select_tactic_falls_back_to_simp_on_an_unclassifiable_goal() -> None:
+    # A bare identifier carries no operator, so nothing upstream claims it and
+    # the default branch decides. (Note "P Q" does NOT land here: adjacent
+    # identifiers read as polynomial structure, which is correct -- a product
+    # of atoms is something ring can reason about.)
+    assert _sel("foo") == "simp"
+    assert _sel("True") == "simp"
+
+
+def test_select_tactic_strips_the_turnstile_prefix() -> None:
+    # Lean goals arrive with a turnstile; the same goal must classify the
+    # same way with and without it, or dispatch silently depends on framing.
+    with_bar = _sel("⊢ a + b = b + a")
+    without_bar = _sel("a + b = b + a")
+    assert with_bar == without_bar == "ring"
+
+
+def test_select_tactic_prefers_field_simp_over_ring_for_ode_goals() -> None:
+    # Order matters and is not obvious: an ODE goal is ALSO polynomial, so if
+    # the ring branch came first it would win and the divisions would never be
+    # cleared. Pinning the precedence is what makes the ordering load-bearing.
+    assert _sel("d/dt C = (A/V) - (C/K)") == "field_simp"
+    assert _sel("A/V = C/K") == "field_simp"
+
+
+def test_candidates_for_closed_numeric_equality_prefer_non_reflexive() -> None:
+    from agentic_pipeline import LeanAgenticPipeline
+
+    p = LeanAgenticPipeline(use_mathlib=False, lean_path="lean")
+    cands = p.get_tactic_candidates("2 + 2 = 4")
+    assert cands[:2] == ["simp", "decide"]
+    assert "rfl" not in cands[:2]
+
+
+def test_candidates_for_an_identity_lead_with_rfl() -> None:
+    from agentic_pipeline import LeanAgenticPipeline
+
+    p = LeanAgenticPipeline(use_mathlib=False, lean_path="lean")
+    cands = p.get_tactic_candidates("a = a")
+    assert cands[0] == "rfl"
+
+
+def test_candidates_for_an_ode_lead_with_a_field_simp_chain() -> None:
+    from agentic_pipeline import LeanAgenticPipeline
+
+    p = LeanAgenticPipeline(use_mathlib=False, lean_path="lean")
+    cands = p.get_tactic_candidates("d/dt C = A/V - C/K")
+    assert any("field_simp" in t and "ring" in t for t in cands), cands
+    # Candidates are ordered most-behavioural-first and must not repeat.
+    assert len(cands) == len(set(cands))
+
+
+# ---------------------------------------------------------------------------
+# Two coverage holes the clean-room mutation run exposed, both compiler-free.
+#
+# The clean-room kill rate for agentic_pipeline.py is 0.5167 (31/60) against
+# 1.0000 (60/60) warm, and the difference is entirely this: without Mathlib
+# the prover tests fail closed and never reach the code below. Both are pure
+# string handling, so both are testable anywhere.
+
+
+def test_execute_with_initial_code_delegates_to_the_tactic_loop() -> None:
+    # qed-01's contract names BOTH execute_tactic_loop and
+    # _execute_with_initial_code, but nothing covered the second: it extracts
+    # the expression after the LAST ': ... := by' and hands the rest to the
+    # loop. A mutant that broke this delegation survived the whole suite.
+    from agentic_pipeline import LeanAgenticPipeline
+
+    p = LeanAgenticPipeline(use_mathlib=False, lean_path="lean")
+    res = p._execute_with_initial_code(
+        "theorem qed_goal : 2 + 2 = 4 := by\n  norm_num\n"
+    )
+    assert res["success"] is True
+    assert res["lean_code"].startswith("theorem qed_goal : 2 + 2 = 4")
+
+
+def test_execute_with_initial_code_fails_closed_without_a_by_block() -> None:
+    # No ': ... := by' means there is no expression to extract. This must be
+    # an explicit failure, not a pass with an empty proof.
+    from agentic_pipeline import LeanAgenticPipeline
+
+    p = LeanAgenticPipeline(use_mathlib=False, lean_path="lean")
+    res = p._execute_with_initial_code("theorem qed_goal : 2 + 2 = 4\n")
+    assert res["success"] is False
+    assert "Could not extract expression" in res["error"]
+    assert res["attempts"] == []
+
+
+def test_execute_with_initial_code_does_not_smuggle_sorry() -> None:
+    from agentic_pipeline import LeanAgenticPipeline
+
+    p = LeanAgenticPipeline(use_mathlib=False, lean_path="lean")
+    res = p._execute_with_initial_code(
+        "theorem qed_goal : 2 + 2 = 4 := by\n  sorry\n"
+    )
+    assert "sorry" not in res.get("lean_code", "")
+
+
+def _typed_pipeline(monkeypatch, var_type: str):
+    """A pipeline whose inferred variable type is pinned.
+
+    ``generate_lean_code`` derives the type from the free variables and the
+    expression, so the Int/Rat branches are only reachable by controlling
+    that inference. Pinning it here is what makes these three branches
+    reachable from a test at all.
+    """
+    from agentic_pipeline import LeanAgenticPipeline
+
+    p = LeanAgenticPipeline(use_mathlib=False, lean_path="lean")
+    monkeypatch.setattr(
+        p, "_get_var_type", lambda variables, expression: var_type)
+    return p
+
+
+def test_generate_lean_code_annotates_negative_int_literals(monkeypatch) -> None:
+    # Under Int the negative literals need an explicit annotation or Lean
+    # infers them at a different type; the annotation must land on the
+    # literals, not on the whole statement.
+    p = _typed_pipeline(monkeypatch, "Int")
+    code = p.generate_lean_code("-5 = -5", [])
+    assert "(-5 : Int)" in code
+    assert code.startswith("theorem qed_goal : ")
+    assert "= (-5 : Int) := by" in code
+
+
+def test_generate_lean_code_leaves_non_negative_ints_unannotated(monkeypatch) -> None:
+    # The Int branch is guarded on a '-' being present AND the type being Int.
+    # A negative expression typed Real must not pick up an Int annotation.
+    p = _typed_pipeline(monkeypatch, "Int")
+    assert ": Int" not in p.generate_lean_code("a + b = b + a", [])
+    p_real = _typed_pipeline(monkeypatch, "Real")
+    assert ": Int" not in p_real.generate_lean_code("-5 = -5", [])
+
+
+def test_generate_lean_code_handles_rat_division(monkeypatch) -> None:
+    p = _typed_pipeline(monkeypatch, "Rat")
+    code = p.generate_lean_code("3/4 = 3/4", [])
+    assert code.startswith("theorem qed_goal : ")
+    assert "3/4" in code

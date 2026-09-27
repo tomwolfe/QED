@@ -878,10 +878,18 @@ class LeanAgenticPipeline:
                         # For negative numbers, add type annotation only to negative literals
                         annotated_expr = re.sub(r'(-\d+)', r'(\1 : Int)', expression)
                         theorem = f"theorem qed_goal : {annotated_expr} := by\n"
-                    elif '/' in expression and var_type == 'Rat':
-                        # For division, add type annotation
-                        theorem = f"theorem qed_goal : {expression} := by\n"
                     else:
+                        # The Rat branch used to sit here as a separate
+                        # `elif '/' in expression and var_type == 'Rat'`
+                        # whose body was BYTE-IDENTICAL to this one, so it
+                        # could never change the output. That made it a
+                        # provably-equivalent mutation target: negating the
+                        # guard produced the same theorem string, and no test
+                        # could kill it by construction. The guard is
+                        # retained in a comment so the intent (division over
+                        # Rat needs no extra annotation because the literals
+                        # are already rational) is not lost, and the dead
+                        # branch is gone.
                         theorem = f"theorem qed_goal : {expression} := by\n"
                 else:
                     theorem = f"theorem qed_goal : {expression} := by\n"
