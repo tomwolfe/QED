@@ -1,2 +1,0 @@
--- output.lean (auto-generated, git-ignored)
--- No sorry-containing proofs are permitted.

@@ -2649,3 +2649,70 @@ def test_generate_lean_code_handles_rat_division(monkeypatch) -> None:
     code = p.generate_lean_code("3/4 = 3/4", [])
     assert code.startswith("theorem qed_goal : ")
     assert "3/4" in code
+
+
+def _raw_pipeline():
+    """A pipeline with no type pinning, for testing the emission step itself."""
+    from agentic_pipeline import LeanAgenticPipeline
+
+    return LeanAgenticPipeline(use_mathlib=False, lean_path="lean")
+
+
+def test_generated_statement_normalizes_implicit_multiplication() -> None:
+    # The normalized form is what gets emitted, not just what gets analysed:
+    # emitting the raw "2ab" token produces a statement Lean cannot parse
+    # ("unexpected identifier; expected ':=', 'where' or '|'").
+    p = _raw_pipeline()
+    code = p.generate_lean_code("(a+b)^2 = a^2 + 2ab + b^2", ["a", "b"])
+    assert "2 * a * b" in code
+    assert "2ab" not in code
+
+
+def test_generated_statement_expands_latex_macros() -> None:
+    p = _raw_pipeline()
+    code = p.generate_lean_code(r"a \cdot b = c \cdot d", ["a", "b", "c", "d"])
+    assert r"\cdot" not in code
+    assert "a * b = c * d" in code
+    frac = p.generate_lean_code(r"\frac{a}{b} = c", ["a", "b", "c"])
+    assert r"\frac" not in frac
+    assert "a) / (b) = c" in frac
+
+
+def test_generated_statement_rewrites_ascii_non_strict_relations() -> None:
+    # Lean spells <= / >= / != with Unicode glyphs. Every occurrence is an infix
+    # operator -- a Lean identifier cannot contain =, < or > -- so the rewrite
+    # must be unconditional, including when a digit is adjacent.
+    p = _raw_pipeline()
+    assert "x ≤ 1" in p.generate_lean_code("x <= 1", ["x"])
+    assert "x ≥ 0" in p.generate_lean_code("x >= 0", ["x"])
+    assert "a ≠ b" in p.generate_lean_code("a != b", ["a", "b"])
+    assert "0≤1" in p.generate_lean_code("0<=1", [])
+    assert "2≥x" in p.generate_lean_code("2>=x", ["x"])
+
+
+def test_relation_rewrite_leaves_equality_and_dotted_identifiers_alone() -> None:
+    from agentic_pipeline import _to_lean_relations
+
+    assert _to_lean_relations("0 = 0") == "0 = 0"
+    assert _to_lean_relations("Nat.succ 0 = 1") == "Nat.succ 0 = 1"
+    assert _to_lean_relations("x < x + 1") == "x < x + 1"
+    assert _to_lean_relations("a.b = c.d") == "a.b = c.d"
+
+
+def test_ode_notation_is_not_normalized_into_a_division() -> None:
+    # `dA/dt = Q / V` marks a rate of change; the `/dt` must survive. Expanding
+    # it as implicit multiplication would emit `dA/d * t`, changing the meaning
+    # and leaving `t` an undeclared identifier, so the theorem cannot compile.
+    p = _raw_pipeline()
+    code = p.generate_lean_code("dA/dt = Q / V", ["A", "Q", "V"])
+    assert "dA/dt = Q / V" in code
+    assert "dA/d * t" not in code
+
+
+def test_ode_input_still_routes_to_the_derivative_tactic_chain() -> None:
+    # Classification runs on the raw input, so the ODE branch must still fire
+    # after normalization was restricted to non-derivative statements.
+    p = _raw_pipeline()
+    cands = p.get_tactic_candidates("dA/dt = Q / V")
+    assert cands[0] == "intros; dsimp; field_simp; ring"
+    assert "dsimp" in cands and "field_simp" in cands
