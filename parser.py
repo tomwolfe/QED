@@ -188,7 +188,13 @@ def expand_latex_macros(expr: str) -> str:
 
     Handles ``\\frac{a}{b}``, ``\\cdot``/``\\times``, ``\\div``,
     ``\\le``/``\\leq``, ``\\ge``/``\\geq``, ``\\neq``/``\\ne``,
-    ``\\left``/``\\right`` and thin spaces.
+    ``\\left``/``\\right``, thin spaces, and the typographic Unicode
+    operators (``×``, ``÷``, ``≤``, ``≥``, ``≠``, ``−``).
+
+    A macro that is *not* listed here (``\\pm``, ``\\sqrt{}``, greek names)
+    is deliberately left in place: the tokenizer then refuses it, so an
+    unsupported macro fails closed instead of leaking into the statement as
+    the ASCII identifier ``pm``/``sqrt``/``alpha``.
     """
     result = _expand_frac_braces(expr)
     # Longest macros first: ``\leq`` must win over ``\le``.
@@ -208,6 +214,13 @@ def expand_latex_macros(expr: str) -> str:
         ('\\\\;', ' '),
         ('\\\\!', ' '),
         ('\\\\ ', ' '),
+        # Typographic Unicode operators (copied from rendered LaTeX).
+        ('×', '*'),
+        ('÷', '/'),
+        ('≤', '<='),
+        ('≥', '>='),
+        ('≠', '!='),
+        ('−', '-'),
     ]
     for pattern, replacement in replacements:
         result = re.sub(pattern, replacement, result)
@@ -274,12 +287,51 @@ def normalize_implicit_multiplication_expression(expr: str) -> str:
     return result
 
 
-def tokenize(expression: str) -> List[str]:
-    """Tokenize a mathematical expression string into tokens."""
-    expr = normalize_implicit_multiplication_expression(expression)
-    token_pattern = '\n        \\d+                  # integers\n        | [a-zA-Z_]\\w*(?:\\.[a-zA-Z_]\\w*)*   # variables/identifiers (dotted like Nat.succ)\n        | [+\\-*/^=!<>]       # operators\n        | \\(|\\)              # parentheses\n        | <=|>=|!=           # multi-char operators\n    '
-    tokens = re.findall(token_pattern, expr, re.VERBOSE)
+# Token vocabulary.  Everything the parser accepts is listed here; an
+# identifier must *start* with a letter (``ka_rate``, ``A_1``, ``Nat.succ``).
+# Allowing a leading ``_`` let the digit-grouping form ``1_000`` tokenize as
+# ``1`` + ``_000`` and reach Lean as the different statement ``1 * _000``.
+_TOKEN_PATTERN = (
+    '\n        \\d+                  # integers\n'
+    '        | [a-zA-Z]\\w*(?:\\.[a-zA-Z]\\w*)*   # variables/identifiers (dotted like Nat.succ)\n'
+    '        | [+\\-*/^=!<>]       # operators\n'
+    '        | \\(|\\)              # parentheses\n'
+    '        | <=|>=|!=           # multi-char operators\n'
+)
+_TOKEN_RE = re.compile(_TOKEN_PATTERN, re.VERBOSE)
+
+
+def _tokenize_checked(expr: str) -> Optional[List[str]]:
+    """Tokenize *expr*, or return ``None`` if it is not fully covered.
+
+    ``re.findall`` silently skips text it cannot match, so a stray character
+    was *deleted* instead of rejected: ``x % y = z`` tokenized to ``x y = z``
+    and reached Lean as the different statement ``x * y = z``, and
+    ``a \\pm b = c`` reached Lean as ``a * pm * b = c``.  Here whitespace
+    between tokens is the only tolerated gap; anything else fails closed.
+    """
+    tokens: List[str] = []
+    cursor = 0
+    for match in _TOKEN_RE.finditer(expr):
+        if expr[cursor:match.start()].strip():
+            return None
+        tokens.append(match.group(0))
+        cursor = match.end()
+    if expr[cursor:].strip():
+        return None
     return tokens
+
+
+def tokenize(expression: str) -> List[str]:
+    """Tokenize a mathematical expression string into tokens.
+
+    Implicit multiplication and LaTeX-like macros are normalized first.
+    Returns an empty list when the expression is empty or contains a
+    character outside the vocabulary above, so every caller fails closed
+    rather than building an AST for a statement the user did not write.
+    """
+    expr = normalize_implicit_multiplication_expression(expression)
+    return _tokenize_checked(expr) or []
 
 def _is_identifier_token(token: str) -> bool:
     """Return True if *token* is an identifier (plain, underscored or dotted).

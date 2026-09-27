@@ -2258,3 +2258,186 @@ def test_ode_with_underscored_names_parses() -> None:
     assert ode is not None
     assert ode.var == 'A_1'
     assert free_vars == ['A_1', 'k_1']
+
+
+# --- 6. total token coverage: a character outside the vocabulary is rejected,
+#        not silently deleted (so no *different* statement reaches Lean) ---
+
+def test_tokenize_rejects_characters_outside_the_vocabulary() -> None:
+    """`re.findall` skipped text it could not match, so a stray character was
+    deleted instead of rejected: 'x % y = z' tokenized to ['x','y','=','z'] and
+    reached Lean as 'x * y = z'. The tokenizer now requires the matches to cover
+    the whole input (whitespace excepted) and returns [] otherwise."""
+    for expr in ['x % y = z', 'a @ b = c', 'a & b = c', 'a, b = c', 'a; b = c',
+                 'x = 1 & y = 2', 'a = b $ c', 'a = b | c', 'a = b # c',
+                 'a = b " c', "a = b ' c", 'a = b ? c', 'a = b : c',
+                 'a = b ~ c', 'a = b ` c', 'a = b { c', 'a = b } c',
+                 'a = b [ c', 'a = b ] c', 'a = b \\unknown']:
+        assert tokenize(expr) == [], expr
+
+
+def test_unknown_characters_fail_closed() -> None:
+    """A statement that cannot be tokenized must be rejected, not approximated:
+    parse_equation yields no node and statement_kind reports 'other'."""
+    for expr in ['x % y = z', 'a @ b = c', 'x = 1_000', '2_3 = 4', 'a & b = c',
+                 'a, b = c', '2.5 = 2', '_foo = 1', 'a = 1/2/3/4_5']:
+        eq, _ = parse_equation(expr)
+        assert eq is None, expr
+        assert statement_kind(expr) == 'other', expr
+
+
+def test_digit_separators_and_decimals_are_not_mangled() -> None:
+    """'1_000' used to tokenize as ['1','_000'] and reach Lean as '1 * _000';
+    '2.5' used to tokenize as ['2','5'] and be interpreted as '2 * 5'. Identifiers
+    must start with a letter, so both now fail closed."""
+    assert tokenize('1_000') == []
+    assert tokenize('2.5') == []
+    eq, _ = parse_equation('x = 1_000')
+    assert eq is None
+    eq, _ = parse_equation('2.5 = 2')
+    assert eq is None
+    # ... and the two forms that *are* supported still work.
+    assert tokenize('x_1 = 1') == ['x_1', '=', '1']
+    assert tokenize('A_1 = 1') == ['A_1', '=', '1']
+
+
+def test_unsupported_latex_macros_fail_closed_instead_of_leaking() -> None:
+    """An unexpanded macro must not become the ASCII identifier that follows the
+    backslash: 'a \\pm b = c' reached Lean as 'a * pm * b = c', and '\\alpha' as a
+    variable named 'alpha'."""
+    for expr in ['a \\pm b = c', 'a \\mp b = c', 'a \\sqrt{2} = b',
+                 '\\alpha + \\beta = 1', '2\\alpha = 1', 'a \\not= b',
+                 'a \\cdot \\pm b = c']:
+        eq, _ = parse_equation(expr)
+        assert eq is None, expr
+        assert statement_kind(expr) == 'other', expr
+        assert 'pm' not in tokenize(expr) and 'alpha' not in tokenize(expr)
+
+
+def test_malformed_ode_with_unknown_characters_fails_closed() -> None:
+    assert parse_ode('dA/dt = a \\pm b') == (None, None)
+    assert parse_ode('dA/dt = a % b') == (None, None)
+    assert parse_ode('dA/dt = (1 + 2') == (None, None)
+
+
+def test_unicode_operators_are_recognized() -> None:
+    """Typographic operators copied out of rendered LaTeX used to lose their
+    meaning entirely: 'a ≤ b' tokenized to ['a','b'] and degraded to the
+    implicit product 'a * b', which is a different (and wrong) statement."""
+    assert tokenize('a × b = c') == ['a', '*', 'b', '=', 'c']
+    assert tokenize('a ÷ b = c') == ['a', '/', 'b', '=', 'c']
+    assert tokenize('1 − 1 = 0') == ['1', '-', '1', '=', '0']
+    assert tokenize('a ≤ b') == ['a', '<', '=', 'b']
+    assert tokenize('a ≥ b') == ['a', '>', '=', 'b']
+    assert tokenize('a ≠ b') == ['a', '!', '=', 'b']
+
+
+def test_unicode_operators_reach_the_parsed_statement() -> None:
+    eq, free_vars = parse_equation('a × b = c')
+    assert eq is not None and canonical_form(eq) == '((a * b)=c)'
+    eq, _ = parse_equation('a ÷ b = c')
+    assert eq is not None and canonical_form(eq) == '((a / b)=c)'
+    eq, _ = parse_equation('1 − 1 = 0')
+    assert eq is not None and canonical_form(eq) == '((1 - 1)=0)'
+    for expr, cls in [('a ≤ b', Le), ('a ≥ b', Ge), ('a ≠ b', Ne)]:
+        eq, _ = parse_equation(expr)
+        assert isinstance(eq, cls), expr
+        assert is_inequality(eq) is True, expr
+        assert statement_kind(expr) == 'inequality', expr
+
+
+def test_unicode_operators_in_an_ode_parse() -> None:
+    ode, free_vars = parse_ode('dA/dt = −k × A')
+    assert ode is not None
+    assert ode.var == 'A'
+    assert canonical_form(ode.rhs) == '((-k) * A)'
+    assert free_vars == ['A', 'k']
+
+
+def test_tokenizer_still_accepts_the_pinned_vocabulary() -> None:
+    """The coverage check must not reject any input the parser is meant to take:
+    whitespace is the only tolerated gap, and every supported token shape still
+    tokenizes."""
+    for expr in ['2 * (a+b)', '(a+b)(c+d)', '3xyz', '2a', 'ab', 'a2', '2ab',
+                 'Nat.succ 0', 'x_1 y_2', 'A_1 (2)', '2 A_1', '(a+b) A_1',
+                 'ka_rate * Ag = 1', 'Vmax * C / (Km + C)', 'Nat + x',
+                 'x = 1 - -1', 'a  *  b  =  c', '(a + b) ^ 2 = a ^ 2']:
+        assert tokenize(expr) != [], expr
+    assert tokenize('2 * (a+b)') == ['2', '*', '(', 'a', '+', 'b', ')']
+    assert tokenize('a  *  b') == ['a', '*', 'b']
+
+
+def test_empty_and_whitespace_input_yields_no_tokens() -> None:
+    assert tokenize('') == []
+    assert tokenize('   ') == []
+    assert tokenize('()') == ['(', ')']
+    assert statement_kind('') == 'other'
+
+
+# ---------------------------------------------------------------------------
+# A Lean timeout is an infrastructure failure, not a refutation.
+#
+# Importing Mathlib from a cold cache (a clean room, a fresh `.lake`) takes
+# far longer than a warm build. When the compile budget was a flat 30s, a
+# provable goal timed out, every tactic was recorded as "did not work", and
+# the pipeline returned "No tactic succeeded after N attempts" -- the same
+# shape it uses for a statement that genuinely does not follow. The only
+# trace was stderr='Timeout' buried in `attempts`, so the suite passed or
+# failed depending on how warm the machine was.
+
+
+def test_lean_compile_timeout_default_is_sized_for_a_cold_cache() -> None:
+    from agentic_pipeline import LeanAgenticPipeline
+
+    p = LeanAgenticPipeline()
+    # A cold Mathlib import does not finish in 30s; 180 is the floor that
+    # keeps correctness from depending on cache warmth.
+    assert p.lean_compile_timeout >= 180
+
+
+def test_lean_compile_timeout_is_configurable() -> None:
+    from agentic_pipeline import LeanAgenticPipeline
+
+    assert LeanAgenticPipeline(lean_compile_timeout=7).lean_compile_timeout == 7
+
+
+def test_every_attempt_timing_out_is_reported_as_infrastructure_failure(
+    monkeypatch,
+) -> None:
+    import subprocess as _sp
+
+    from agentic_pipeline import LeanAgenticPipeline
+
+    def _boom(*a, **k):
+        raise _sp.TimeoutExpired(cmd="lean", timeout=1)
+
+    monkeypatch.setattr(_sp, "run", _boom)
+    p = LeanAgenticPipeline(use_mathlib=False, lean_path="lean")
+    res = p.execute_tactic_loop("x + x = 2 * x")
+    assert res["success"] is False
+    # Not the refutation message: this must never be mistakable for
+    # "the statement is unprovable".
+    assert "No tactic succeeded" not in res["error"]
+    assert res.get("infrastructure_failure") is True
+    assert "NOT a refutation" in res["error"]
+
+
+def test_a_real_refutation_is_not_labelled_infrastructure_failure(
+    monkeypatch,
+) -> None:
+    import subprocess as _sp
+
+    from agentic_pipeline import LeanAgenticPipeline
+
+    class _Done:
+        returncode = 1
+        stdout = " unsolved goals\n"
+        stderr = ""
+
+    monkeypatch.setattr(_sp, "run", lambda *a, **k: _Done())
+    p = LeanAgenticPipeline(use_mathlib=False, lean_path="lean")
+    res = p.execute_tactic_loop("x + x = 2 * x")
+    assert res["success"] is False
+    # The compiler answered, so this IS a verdict and keeps the old wording.
+    assert res.get("infrastructure_failure") is None
+    assert "No tactic succeeded" in res["error"]

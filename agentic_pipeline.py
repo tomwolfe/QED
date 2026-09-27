@@ -72,7 +72,8 @@ class LeanAgenticPipeline:
     """
     
     def __init__(self, use_mathlib: bool = True, lean_path: Optional[str] = None,
-                 adapter: Optional[Any] = None):
+                 adapter: Optional[Any] = None,
+                 lean_compile_timeout: int = 180):
         """
         Initialize the pipeline.
         
@@ -80,7 +81,13 @@ class LeanAgenticPipeline:
             use_mathlib: Whether to use Mathlib tactics
             lean_path: Path to lean executable (or None to search PATH)
             adapter: Optional agent adapter for agentic repair (must have send(prompt, session) method)
+            lean_compile_timeout: Seconds allowed for one Lean invocation.
+                The default is sized for a COLD Mathlib cache: a clean room or
+                a fresh `.lake` has to import Mathlib from source, which is
+                far slower than a warm build. A budget tuned to a warm cache
+                makes correctness depend on machine speed.
         """
+        self.lean_compile_timeout = lean_compile_timeout
         self.lean_path = lean_path or self._find_lean()
         # Detect Lake environment for hermetic Mathlib builds
         self._lake_root = self._find_lake_root()
@@ -370,7 +377,7 @@ class LeanAgenticPipeline:
                 self._compile_lean_cmd(verify_path),
                 capture_output=True,
                 text=True,
-                timeout=30,
+                timeout=self.lean_compile_timeout,
                 env=self._compile_env()
             )
             
@@ -941,7 +948,7 @@ class LeanAgenticPipeline:
                     self._compile_lean_cmd(temp_path),
                     capture_output=True,
                     text=True,
-                    timeout=30,
+                    timeout=self.lean_compile_timeout,
                     env=self._compile_env()
                 )
                 
@@ -1060,7 +1067,8 @@ class LeanAgenticPipeline:
                             result = subprocess.run(
                                 self._compile_lean_cmd(temp_path),
                                 capture_output=True, text=True,
-                                timeout=30, env=self._compile_env(),
+                                timeout=self.lean_compile_timeout,
+                                env=self._compile_env(),
                             )
                             has_sorry, sorry_reason = self.check_for_sorry(
                                 lean_code, result.stdout + result.stderr,
@@ -1103,6 +1111,39 @@ class LeanAgenticPipeline:
                                 pass
                     except Exception:
                         continue
+
+        # A Lean invocation that never finished is NOT a refutation. It is an
+        # infrastructure failure, and conflating the two is how a verification
+        # system starts lying: importing Mathlib from a cold cache routinely
+        # takes far longer than a warm build, so a provable goal times out,
+        # every tactic is recorded as "did not work", and the pipeline
+        # reports "No tactic succeeded" as though the statement were unprovable.
+        # That failure is silent (the only trace is stderr='Timeout' buried in
+        # attempts) and it is environment-dependent, so it turns a correct
+        # suite into a coin flip on a slow or clean-room machine.
+        #
+        # So: a realistic budget for a cold Mathlib import, and if NO attempt
+        # ever got a verdict, say that explicitly rather than implying the
+        # mathematics failed.
+        verdict_obtained = any(
+            a.get('exit_code') != -1 or a.get('stderr') != 'Timeout'
+            for a in attempts
+        )
+        if not verdict_obtained and attempts:
+            return {
+                'success': False,
+                'error': (
+                    f'No verdict from the Lean compiler after {len(attempts)} '
+                    f'attempts: every attempt hit the {self.lean_compile_timeout}s '
+                    f'timeout. This is an environment/timeout failure, NOT a '
+                    f'refutation -- the statement was never disproved and may '
+                    f'well be provable. Raise lean_compile_timeout or warm the '
+                    f'build cache.'
+                ),
+                'lean_code': base_code,
+                'attempts': attempts,
+                'infrastructure_failure': True,
+            }
 
         return {
             'success': False,
