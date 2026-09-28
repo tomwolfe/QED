@@ -228,7 +228,7 @@ stdout/stderr.
 ├── check_tactic.py        # Helper script for tactic selection verification
 ├── check_integration.py   # Integration check with real Lean compiler
 ├── comprehensive_demo.py  # Walkthrough demo of the pipeline
-├── run_killrate.py        # Mutation kill-rate harness (wraps tether.verification.measure)
+├── run_killrate.py        # Tactic-candidate kill-rate reporting
 ├── verify_pbpk_lemmas.py  # Verifies VeriTrial-exported PBPK lemmas through QED
 ├── scripts/               # Adapter helper scripts (opencode_tty.py)
 ├── missions/              # Tether mission files
@@ -360,7 +360,7 @@ negative literal.
 ## Running Tests
 
 ```bash
-python3 -m pytest test_pipeline.py -v  # 262 unit tests
+python3 -m pytest test_pipeline.py -v  # all unit tests
 python3 run_tests.py  # 18 checks: 5 end-to-end pipeline runs + 13 no-sorry-gate checks
 python3 check_integration.py  # Integration check with real Lean compiler
 ```

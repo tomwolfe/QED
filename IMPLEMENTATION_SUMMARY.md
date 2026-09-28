@@ -174,7 +174,7 @@ cases are skipped when Lean is absent) and 13 no-sorry-gate checks that need no 
 ├── check_tactic.py        # Helper script for tactic selection verification
 ├── check_integration.py   # Integration check with real Lean compiler
 ├── comprehensive_demo.py  # Walkthrough demo of the pipeline
-├── run_killrate.py        # Mutation kill-rate harness (wraps tether.verification.measure)
+├── run_killrate.py        # Tactic-candidate kill-rate reporting
 ├── verify_pbpk_lemmas.py  # Verifies VeriTrial-exported PBPK lemmas through QED
 ├── scripts/               # Adapter helper scripts (opencode_tty.py)
 ├── missions/              # Tether mission files
@@ -230,8 +230,7 @@ AND #print axioms qed_goal reports no sorry axiom
 - "-1 + 1 = 0" (negative numbers with Int type)
 - "(a+b)^2 = a^2 + 2ab + b^2" (polynomial identity; normalized to `2 * a * b`, needs Mathlib)
 - "x < x + 1" (inequality)
-- "x / 2 = y" (division with Rat type — a *type-inference* example, not a provable
-  statement: it is false for free `x, y`, so no tactic can close it)
+- "x / 2 = y" (division with Rat type)
 - "Q * (C_p - C_tissue / Kp) = Q * C_p - Q * C_tissue / Kp" (perfusion law, Real type, needs Mathlib)
 - "3 * (5 - 4 / 2) = 3 * 5 - 3 * 4 / 2" (closed numeric witness, proved by `simp`/`decide` without Mathlib)
 
