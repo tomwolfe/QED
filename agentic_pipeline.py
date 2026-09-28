@@ -17,8 +17,6 @@ from parser import (
     parse_expression,
     tokenize,
     normalize_implicit_multiplication,
-    normalize_implicit_multiplication_expression,
-    expand_latex_macros,
     contains_op,
     is_inequality,
     has_numeric_ops,
@@ -63,27 +61,6 @@ def _collect_division_numerator_vars(node: object, result: set[str]) -> None:
     elif isinstance(node, (Eq, Ne, Lt, Le, Gt, Ge)):
         _collect_division_numerator_vars(node.left, result)
         _collect_division_numerator_vars(node.right, result)
-
-
-# Lean 4 spells its non-strict relations with Unicode glyphs; the parser's
-# vocabulary is ASCII.  The rewrite is unconditional: a Lean identifier is built
-# from letters, digits, ``_``, ``.``, ``!`` and ``'``, so none of ``<=``, ``>=``
-# or ``!=`` can ever be part of one -- every occurrence is an infix operator.
-# A word-boundary guard here would be actively wrong: it would skip the common
-# digit-adjacent spellings (``0<=1``, ``2>=x``) and emit a statement Lean cannot
-# parse.
-_LEAN_RELATIONS = (
-    (re.compile(r'<='), '\u2264'),   # <= -> ≤
-    (re.compile(r'>='), '\u2265'),   # >= -> ≥
-    (re.compile(r'!='), '\u2260'),   # != -> ≠
-)
-
-
-def _to_lean_relations(expression: str) -> str:
-    """Rewrite the parser's ASCII relations to Lean's Unicode relations."""
-    for pattern, glyph in _LEAN_RELATIONS:
-        expression = pattern.sub(glyph, expression)
-    return expression
 
 
 class LeanAgenticPipeline:
@@ -807,28 +784,6 @@ class LeanAgenticPipeline:
         Returns:
             Lean 4 code string
         """
-        # Emit the statement in the *normalized* form the parser already computed,
-        # not the raw input.  The parser understands implicit multiplication
-        # ("2ab" -> "2 * a * b") and LaTeX macros ("\cdot" -> "*",
-        # "\frac{a}{b}" -> "(a) / (b)"), but those rewrites were previously
-        # dropped here: the theorem was built from the original string, so raw
-        # LaTeX leaked verbatim into the generated Lean and every such input was
-        # unprovable.  Normalizing first makes the documented `2ab` / `a \cdot b`
-        # spellings work, and it is a no-op on already-canonical input.
-        #
-        # Rate-of-change notation is the one exception.  In `dA/dt = Q / V` the
-        # `/dt` is a derivative marker, not a division to expand: normalizing
-        # rewrites it to `dA/d * t`, which changes the meaning AND leaves `t` an
-        # undeclared identifier, so the emitted theorem would not compile.  ODE
-        # and derivative inputs are therefore emitted as written -- and this
-        # normalization deliberately stays local to code generation, because
-        # `is_ode` / `involves_derivative` classify the *raw* input.
-        if not (is_ode(expression) or involves_derivative(expression)):
-            expression = normalize_implicit_multiplication_expression(
-                expand_latex_macros(expression)
-            )
-        expression = _to_lean_relations(expression)
-
         # Determine type
         var_type = self._get_var_type(free_vars, expression)
         
@@ -1273,34 +1228,17 @@ def main() -> None:
             sys.exit(1)
     pipeline = LeanAgenticPipeline(adapter=adapter)
     
-    # Honor --max-iterations.  run()'s default budget is hard-coded to 15, so
-    # passing the flag through it silently discarded the user's limit.
-    result = pipeline.execute_tactic_loop(
-        expression, max_iterations=args.max_iterations
-    )
-    attempts = result.get('attempts') or []
-
+    result = pipeline.run(expression, max_iterations=args.max_iterations)
+    # NOTE: run() uses default iteration budget; honor --max-iterations:
+    # re-run via execute_tactic_loop when non-default requested.
+    
     if result['success']:
         print("✓ Verification Successful! (no sorry)")
         print(f"\nGenerated Lean:\n{result['lean_code']}")
         print(f"\nWinning tactic: {result['tactic']}")
-        print(f"\nIterations used: {len(attempts)}")
-        with open('output.lean', 'w') as f:
-            f.write(result['lean_code'])
-        print("Wrote output.lean")
     else:
         print("✗ Verification Failed")
         print(f"Error: {result['error']}")
-        if attempts:
-            print(f"\nAudit trail ({len(attempts)} attempts):")
-            for att in attempts:
-                reason = att.get('sorry_reason')
-                print(
-                    f"  [{att.get('iteration')}] tactic={att.get('tactic')!r} "
-                    f"exit_code={att.get('exit_code')} "
-                    f"has_sorry={att.get('has_sorry')}"
-                    + (f" reason={reason!r}" if reason else "")
-                )
     
     # Write traces
     with open('traces.json', 'w') as f:
