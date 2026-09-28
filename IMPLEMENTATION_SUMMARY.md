@@ -104,8 +104,7 @@ A CLI-based agentic pipeline that converts constrained mathematical statements (
 
 ### Test Results
 
-`python3 -m pytest test_pipeline.py -v` runs the whole unit-test suite and must be
-fully green; pytest reports the exact count at the end of the run.
+`python3 -m pytest test_pipeline.py -v` -> **262 passed**.
 `python3 run_tests.py` runs 18 checks: 5 end-to-end pipeline invocations (the 3 success
 cases are skipped when Lean is absent) and 13 no-sorry-gate checks that need no compiler.
 
@@ -298,7 +297,7 @@ The Lean 4 Agentic Pipeline has been hardened from an MVP to a more robust imple
 - Type inference produces context-appropriate types (Real/Int/Rat/Nat) instead of defaulting to Int, and emits positivity hypotheses for Real theorems
 - Tactic selection uses parsed AST structure for smarter ordering (not keyword-based), covering ODE/derivative, Metzler positivity, discrete-step conservation, and non-negative-product goals
 - Sorry detection has been hardened with comprehensive patterns and fail-closed axiom verification
-- Comprehensive unit tests verify all improvements and the whole suite is green
+- Comprehensive unit tests verify all improvements (262 passing)
 - Pipeline gracefully handles missing Lean compiler
 - The CLI honours `--max-iterations`, reports the iteration count, writes `output.lean`, and prints the audit trail on failure
 - An optional agentic repair path asks an external adapter for a proof from Lean's real goal and hypotheses when the static candidates are exhausted

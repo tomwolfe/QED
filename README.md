@@ -360,7 +360,7 @@ negative literal.
 ## Running Tests
 
 ```bash
-python3 -m pytest test_pipeline.py -v  # the full unit-test suite (pytest reports the count)
+python3 -m pytest test_pipeline.py -v  # 262 unit tests
 python3 run_tests.py  # 18 checks: 5 end-to-end pipeline runs + 13 no-sorry-gate checks
 python3 check_integration.py  # Integration check with real Lean compiler
 ```

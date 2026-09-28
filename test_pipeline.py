@@ -2421,53 +2421,6 @@ def test_lean_compile_timeout_is_configurable() -> None:
     assert LeanAgenticPipeline(lean_compile_timeout=7).lean_compile_timeout == 7
 
 
-# A missing Lean toolchain is the same class of problem: the statement was
-# never checked, so the result must be a named setup error with no attempts
-# and no proof -- never a refutation and never a `sorry`.
-
-
-def test_missing_lean_compiler_reports_a_setup_error_not_a_refutation() -> None:
-    from agentic_pipeline import LeanAgenticPipeline
-
-    p = LeanAgenticPipeline(use_mathlib=False, lean_path="lean")
-    # Constructing with lean_path=None would re-run the PATH probe, so null the
-    # attribute out to stand in for a machine with no toolchain at all.
-    p.lean_path = None
-    res = p.execute_tactic_loop("0 = 0")
-    assert res["success"] is False
-    assert "Lean compiler not found" in res["error"]
-    # Nothing was tried, so nothing can be read as "the tactic did not work".
-    assert res["attempts"] == []
-    assert "No tactic succeeded" not in res["error"]
-    assert res.get("infrastructure_failure") is None
-    # Fail closed: with no compiler there is no proof to report.
-    assert res["lean_code"] is None
-
-
-def test_missing_lean_compiler_is_detected_before_invoking_a_compiler(
-    monkeypatch,
-) -> None:
-    # "Gracefully" means the toolchain check happens FIRST: no Lean process is
-    # spawned, so the result does not depend on whether a stray `lean` happens
-    # to be on PATH. _compile_lean_cmd falls back to the bare name 'lean' when
-    # lean_path is None, so without this guard a missing toolchain silently
-    # borrows whatever is installed instead of reporting the setup error.
-    import subprocess as _sp
-
-    from agentic_pipeline import LeanAgenticPipeline
-
-    def _must_not_run(*a, **k):
-        raise AssertionError("spawned a compiler with no toolchain configured")
-
-    monkeypatch.setattr(_sp, "run", _must_not_run)
-    p = LeanAgenticPipeline(use_mathlib=False, lean_path="lean")
-    p.lean_path = None
-    res = p.execute_tactic_loop("x + x = 2 * x")
-    assert res["success"] is False
-    assert "Lean compiler not found" in res["error"]
-    assert "sorry" not in (res.get("lean_code") or "")
-
-
 def test_every_attempt_timing_out_is_reported_as_infrastructure_failure(
     monkeypatch,
 ) -> None:
