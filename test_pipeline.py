@@ -1950,6 +1950,47 @@ def test_ood_matrix_entry_equality() -> None:
     node, _ = parse_equation("K11 + K12 = K11 + K12")
     assert node is not None
 
+def test_ood_finance_budget_identity() -> None:
+    """A household budget identity is a conservation law, not a PK statement.
+
+    Out-of-domain on purpose: nothing here resembles a compartment, a rate
+    constant, or an amount, so the conservation recognizer is exercised on
+    vocabulary it has never been tuned against. The identity is written in the
+    canonical ``sum - total = 0`` form the recognizer requires (a linear sum
+    equating to zero), not in the ``= savings`` form a person would write.
+    """
+    from parser import parse_equation, is_linear_conservation
+    node, _ = parse_equation(
+        "revenue - rent - food - transport - savings = 0")
+    assert node is not None and is_linear_conservation(node)
+    # The recognizer is a *structural* classifier: it certifies the FORM
+    # "linear sum = 0" and deliberately does not judge whether the statement
+    # is a true identity (that is the prover's job, not the parser's). So the
+    # meaningful contrast is shape, not semantics: an inequality is not a
+    # conservation law.
+    bad, _ = parse_equation("revenue - rent - savings > 0")
+    assert bad is not None and not is_linear_conservation(bad)
+
+def test_ood_ode_from_a_non_biological_domain() -> None:
+    """A cooling-body ODE and a generic flow bound, both non-PK.
+
+    Exercises ``is_ode`` / ``parse_ode`` / ``involves_derivative`` /
+    ``is_nonneg_product`` on engineering notation so the ODE and flow
+    recognizers are not merely correct for the compartment naming they were
+    built around.
+    """
+    from parser import involves_derivative, is_ode, is_nonneg_product
+    from parser import parse_equation, parse_ode
+    ode, free_vars = parse_ode("dT_env/dt = -h * (T_env - T_ambient)")
+    assert ode is not None, "a first-order cooling ODE must parse"
+    assert is_ode("dT_env/dt = -h * (T_env - T_ambient)") is True
+    assert is_ode("revenue - rent = savings") is False
+    assert involves_derivative("dT_env/dt = -h * (T_env - T_ambient)") is True
+    # Newton-style cooling flux, written as a flow bound: a product carrying a
+    # division, which is the shape is_nonneg_product recognises.
+    node, _ = parse_equation("(h / c_air) * (T_env - T_ambient) >= 0")
+    assert node is not None and is_nonneg_product(node)
+
 
 # --- Exact-goal extraction for the agentic repair prompt ---
 

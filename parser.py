@@ -155,7 +155,7 @@ class Imp(ASTNode):
 # Characters that may occur inside an identifier ("word").  Every implicit
 # multiplication rule below must fire only at *word boundaries*: without the
 # lookbehind/lookahead on this class, multi-character names are shredded
-# (``ka_rate`` -> ``k * a_rate``, ``A_1ab`` -> ``A_1 * a * b``,
+# (``k_rate`` -> ``k * _rate``, ``A_1ab`` -> ``A_1 * a * b``,
 # ``a_bc`` -> ``a_b * c``), which silently changes the parsed statement.
 # The backslash keeps unexpanded LaTeX macros (``\alpha``) from being split
 # into letter pairs.
@@ -242,12 +242,12 @@ def normalize_implicit_multiplication_expression(expr: str) -> str:
     - 'a(b+c)' -> 'a * (b+c)' (variable followed by paren)
 
     Multi-character names are preserved: the rules only fire at word
-    boundaries, so 'ka_rate', 'A_1ab', 'a_bc' and 'Nat.succ' are left intact.
+    boundaries, so 'k_rate', 'A_1ab', 'a_bc' and 'Nat.succ' are left intact.
 
     Known ambiguity of the MVP input language: a *standalone* lowercase
     letter pair is always read as a product ('ab' -> 'a * b'), so a bare
     two-letter name such as 'ka' in '(ka + Ag)2' is still read as 'k * a'.
-    Write 'ka_rate' style names with an underscore, or an explicit ' * '.
+    Write 'k_rate' style names with an underscore, or an explicit ' * '.
     """
     result = expand_latex_macros(expr)
     result = result.replace('**', '^')
@@ -288,7 +288,7 @@ def normalize_implicit_multiplication_expression(expr: str) -> str:
 
 
 # Token vocabulary.  Everything the parser accepts is listed here; an
-# identifier must *start* with a letter (``ka_rate``, ``A_1``, ``Nat.succ``).
+# identifier must *start* with a letter (``k_rate``, ``A_1``, ``Nat.succ``).
 # Allowing a leading ``_`` let the digit-grouping form ``1_000`` tokenize as
 # ``1`` + ``_000`` and reach Lean as the different statement ``1 * _000``.
 _TOKEN_PATTERN = (
@@ -336,7 +336,7 @@ def tokenize(expression: str) -> List[str]:
 def _is_identifier_token(token: str) -> bool:
     """Return True if *token* is an identifier (plain, underscored or dotted).
 
-    ``Nat.succ``, ``A_1`` and ``ka_rate`` are single operands; the previous
+    ``Nat.succ``, ``A_1`` and ``k_rate`` are single operands; the previous
     ``str.isalpha()`` test reported False for all of them, so the adjacency
     rule silently dropped the following token (``Nat.succ 0`` lost its ``0``).
     """
