@@ -1,0 +1,145 @@
+# Mission: qed-00-toolchain-consistency
+#
+# WHY THIS EXISTS (truth audit -- narrower claim than "fix the tests"):
+# `python3 -m pytest test_pipeline.py -q` currently reports 10 failed, 248
+# passed. All 10 failures are the "parametric ..." proofs and all 10 report the
+# identical Lean error:
+#
+#   error: failed to read file '.../mathlib/.lake/build/lib/lean/Mathlib/
+#   Basic/Real/Basic.olean', incompatible header
+#
+# The generator still emits `import Mathlib.Basic.Real.Basic`
+# (agentic_pipeline.py, the imports template used by generate_lean_code).
+# That module was a deprecated shim removed from mathlib after v4.34; at the
+# now-pinned tag v4.33.0 the file does not exist. A stale .olean built by the
+# old v4.34.0-rc2 toolchain (dated Sep 5) is still present in the mathlib build
+# directory, so the pinned v4.33.0 `lean` finds the file and rejects its header
+# rather than reporting a missing import.
+#
+# This is a latent generator bug that the broken `lake` binary had been masking:
+# before the toolchain pin, `lake build` was unsatisfiable, so this suite could
+# not run at all and the 10 failures were invisible rather than absent.
+#
+# SCOPE OF THE CLAIM: this mission makes the generator emit imports that exist
+# at the pinned mathlib version. It does NOT claim to change what the tactics
+# prove. Whether all 10 parametric goals prove is an empirical question the
+# verification commands below answer; if a goal genuinely needs a tactic that
+# changed behaviour between v4.33 and v4.34, that is a separate finding and the
+# honest outcome is a narrower test change, recorded in docs/, not a re-pin.
+
+mission:
+  name: qed-00-toolchain-consistency
+  goal: |
+    Make the Lean code QED generates import modules that exist at the pinned
+    mathlib version, so `python3 -m pytest test_pipeline.py -q` is green.
+
+    BACKGROUND (do not "fix" this by re-pinning the toolchain):
+    QED/lean-toolchain is leanprover/lean4:v4.33.0 and QED/lakefile.lean pins
+    mathlib to the matching tag v4.33.0. That pin is deliberate: the v4.34.0-rc2
+    `lake` binary SIGTRAPs (exit 133) on arm64 Darwin 27 for every invocation.
+    Do not change lean-toolchain, lakefile.lean, or lake-manifest.json.
+
+    TASK 1 - IMPORT TEMPLATE (the actual defect)
+    Find every place the pipeline emits a Mathlib import header -- at minimum
+    generate_lean_code / the imports template in agentic_pipeline.py, and any
+    other hardcoded "Mathlib.Basic.Real.Basic" or equivalent -- and change them
+    to import `Mathlib.Data.Real.Basic`, which is the canonical module and
+    exists at the pinned version (and also at the old one, so the change is
+    version-robust in both directions). Do NOT invent a version probe or a
+    fallback import chain; one correct import is the fix.
+
+    TASK 2 - NO OTHER module renames
+    Do not change Mathlib.Tactic or any other import. If another import is
+    genuinely missing at v4.33.0, say so in your summary rather than silently
+    swapping it.
+
+    TASK 3 - STALE BUILD ARTIFACTS (cleanup, not the fix)
+    The stale Mathlib/Basic/Real/Basic.olean from the old toolchain is a build
+    artifact under .lake/ and is not tracked by git. You may delete stale
+    artifacts, but the fix must stand on its own with a fresh `lake build`;
+    do not rely on deleting a file to make a test pass.
+
+    TASK 4 - NO WEAKENING
+    Do not edit test_pipeline.py to skip, xfail, relax, or delete any of the 10
+    parametric tests. Do not add "sorry". If a parametric goal turns out to be
+    genuinely unprovable at this mathlib version, leave the test failing and
+    report it -- a red test that tells the truth is the correct outcome here.
+
+    TASK 5 - DOCUMENT
+    Add a short section to IMPLEMENTATION_SUMMARY.md recording: the pin change
+    (v4.34.0-rc2 -> v4.33.0 and why), the import rename, and the empirical
+    before/after pytest counts. Keep the claim narrow and factual.
+
+context_files:
+  - agentic_pipeline.py
+  - parser.py
+  - test_pipeline.py
+  - lakefile.lean
+  - lean-toolchain
+  - IMPLEMENTATION_SUMMARY.md
+
+constraints:
+  - QED stays domain-agnostic: no PBPK/organ/cyp vocabulary in parser.py or
+    agentic_pipeline.py
+  - do not modify lean-toolchain, lakefile.lean, or lake-manifest.json
+  - do not weaken, skip, or delete tests
+  - no "sorry" anywhere
+
+verification:
+  commands:
+    # 1. All three libraries still build against the pinned toolchain.
+    - "lake build"
+    # 2. The generator now emits an import that exists at the pinned version.
+    - >-
+      python3 -c "import re,pathlib;
+      src=pathlib.Path('agentic_pipeline.py').read_text();
+      bad=re.findall(r'Mathlib\.Basic\.Real\.Basic', src);
+      assert not bad, 'stale import Mathlib.Basic.Real.Basic still emitted: '+str(bad);
+      good=re.findall(r'Mathlib\.Data\.Real\.Basic', src);
+      assert good, 'expected Mathlib.Data.Real.Basic to be imported somewhere';
+      print('import template OK')"
+    # 3. The generated header itself is accepted by the pinned toolchain.
+    - >-
+      python3 -c "from agentic_pipeline import LeanAgenticPipeline;
+      import pathlib,subprocess,tempfile;
+      p=LeanAgenticPipeline(use_mathlib=True);
+      code=p.generate_lean_code('Q / Kp > 0');
+      assert 'Mathlib.Data.Real.Basic' in code, code[:400];
+      f=tempfile.NamedTemporaryFile('w',suffix='.lean',delete=False);
+      f.write(code); f.close();
+      r=subprocess.run(['lean',f.name],capture_output=True,text=True);
+      out=r.stdout+r.stderr;
+      assert 'incompatible header' not in out, 'stale-olean header error still present: '+out[:500];
+      assert 'Mathlib.Basic.Real.Basic' not in out, out[:500];
+      print('generated code typechecks against pinned toolchain')"
+    # 4. The full suite is green.
+    - "python3 -m pytest test_pipeline.py -q"
+    - "python3 run_tests.py"
+    # 5. Domain-agnosticism holds.
+    - >-
+      python3 -c "import re,pathlib;
+      pat=re.compile(r'pbpk|liver|dili|cyp|ka_rate', re.I);
+      hits=[(f,l) for f in ('parser.py','agentic_pipeline.py')
+            for i,l in enumerate(pathlib.Path(f).read_text().splitlines(),1)
+            if pat.search(l)];
+      assert not hits, 'domain leakage: '+str(hits[:5]);
+      print('zero domain leakage')"
+  probes:
+    - command: "python3 check_sorry.py true"
+      contains: "True"
+  clean_room: true
+  timeout_seconds: 1800
+
+recovery:
+  max_attempts: 3
+
+review:
+  enabled: true
+  adapter: opencode
+
+budget:
+  max_sends: 20
+  max_wall_seconds: 3600
+
+adapter: opencode
+git_state_guard: true
