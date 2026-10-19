@@ -41,6 +41,6 @@ budget:
 adapter: command
 adapters:
   opencode:
-    command: ["python3", "scripts/opencode_tty.py", "opencode/beam-free", "{prompt}"]
+    command: ["python3", "scripts/opencode_tty.py", "opencode/minimax-m3.1-flash-free", "{prompt}"]
   command:
-    command: ["python3", "scripts/opencode_tty.py", "opencode/beam-free", "{prompt}"]
+    command: ["python3", "scripts/opencode_tty.py", "opencode/minimax-m3.1-flash-free", "{prompt}"]
