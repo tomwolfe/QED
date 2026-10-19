@@ -79,8 +79,7 @@ context_files:
   - IMPLEMENTATION_SUMMARY.md
 
 constraints:
-  - QED stays domain-agnostic: no PBPK/organ/cyp vocabulary in parser.py or
-    agentic_pipeline.py
+  - "QED stays domain-agnostic: no PBPK/organ/cyp vocabulary in parser.py or agentic_pipeline.py"
   - do not modify lean-toolchain, lakefile.lean, or lake-manifest.json
   - do not weaken, skip, or delete tests
   - no "sorry" anywhere
