@@ -773,17 +773,20 @@ class LeanAgenticPipeline:
         # Default to simp
         return 'simp'
     
-    def generate_lean_code(self, expression: str, free_vars: List[str]) -> str:
+    def generate_lean_code(self, expression: str, free_vars: Optional[List[str]] = None) -> str:
         """
         Generate Lean 4 theorem code from mathematical expression.
         
         Args:
             expression: Mathematical expression
-            free_vars: List of free variables
+            free_vars: List of free variables (defaults to none)
             
         Returns:
             Lean 4 code string
         """
+        if free_vars is None:
+            free_vars = []
+
         # Determine type
         var_type = self._get_var_type(free_vars, expression)
         
@@ -793,8 +796,13 @@ class LeanAgenticPipeline:
         
         # Build imports and theorem header
         if var_type == 'Real':
-            # Real-typed theorems live in a field; emit [Field ℝ] instance
-            imports = "import Mathlib.Tactic\nimport Mathlib.Basic.Real.Basic\n\n"
+            # Real-typed theorems live in a field; emit [Field ℝ] instance.
+            # `Mathlib.Data.Real.Basic` is the canonical module name. The old
+            # `Mathlib.Basic.*.Basic` module it replaces does not exist at the
+            # pinned mathlib version (the leftover .olean from the old
+            # toolchain is unreadable there), so the rename is required, not
+            # cosmetic. One correct import, no fallback chain.
+            imports = "import Mathlib.Tactic\nimport Mathlib.Data.Real.Basic\n\n"
 
             # For parametric field identities (free vars + symbolic division),
             # emit universal quantification with positivity hypotheses for

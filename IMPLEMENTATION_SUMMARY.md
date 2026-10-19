@@ -193,3 +193,55 @@ The Lean 4 Agentic Pipeline has been hardened from an MVP to a more robust imple
 - Pipeline gracefully handles missing Lean compiler
 - End-to-end integration verified with real Lean 4 compiler: 0=0, Nat.succ 0=1, x+0=x, -1+1=0 all verify without sorry
 - Mathlib auto-detection: falls back to core-only tactics when Mathlib is unavailable
+
+### qed-00-toolchain-consistency
+
+Three separate things, recorded narrowly and empirically.
+
+**1. The toolchain pin (`v4.34.0-rc2` -> `v4.33.0`).**
+`lean-toolchain` is `leanprover/lean4:v4.33.0` and `lakefile.lean` requires mathlib at
+the matching tag `v4.33.0`. The pin is deliberate: the `v4.34.0-rc2` `lake` binary
+SIGTRAPs (exit 133) on arm64 Darwin 27 for *every* invocation, so nothing runs
+under it. At the pinned `v4.33.0`, `lake --version` exits 0 normally. mathlib
+follows the toolchain so the pair is known-good together.
+
+**2. The import rename -- this was the actual defect.**
+`generate_lean_code` emitted a Real-typed header importing
+`Mathlib.Basic.Real.Basic`. That module does not exist at mathlib `v4.33.0`
+(there is no `Mathlib/Basic/Real/Basic.lean` in the pinned source tree), so every
+generated Real theorem failed to compile:
+
+```text
+error: failed to read file '.../Mathlib/Basic/Real/Basic.olean', incompatible header
+```
+
+The header now imports `Mathlib.Data.Real.Basic`, the canonical module, which does
+exist at `v4.33.0`. One correct import -- no version probe, no fallback chain. No
+other import was touched: `Mathlib.Tactic` (the Mathlib-availability probe and the
+non-Real path) is unchanged, and no other import was found missing at `v4.33.0`.
+
+**3. Stale build artifact (cleanup, not the fix).**
+A `Mathlib/Basic/Real/Basic.olean` tree dated Sep 5 remained under `.lake/` from the
+old toolchain; it was untracked and gitignored. It was removed as cleanup only. The
+rename is the fix: the 10 previously-failing tests went green with that stale tree
+still on disk, and `lake build` afterwards did not attempt to rebuild it (those
+modules do not exist in the pinned source).
+
+**Empirical pytest counts** (`python3 -m pytest test_pipeline.py -q`, same machine):
+
+| | Result |
+|---|---|
+| Before | 10 failed, 248 passed |
+| After | 258 passed |
+
+The 10 that flipped were the parametric/Real-typed goals, all of which had been
+failing on `incompatible header` rather than on the mathematics. No test was
+skipped, xfailed, relaxed or deleted, and no `sorry` was introduced. `run_tests.py`
+remains 18/18.
+
+**4. `generate_lean_code(expression, free_vars=None)`.**
+`free_vars` is now optional and defaults to `None`, normalised to `[]`. Every
+existing caller (`execute_tactic_loop`, `test_pipeline.py`, `check_type.py`) already
+passed it explicitly, so no call site or generated theorem changed; this only makes
+`generate_lean_code(expr)` a valid one-argument call. It does not affect the type
+inference, which already derives the variable type from the expression alone.
