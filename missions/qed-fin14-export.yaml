@@ -1,0 +1,185 @@
+# Mission: qed-fin14-export
+#
+# WHY THIS EXISTS (closes a false claim recorded in GLOBAL_MINIMUM_REPORT.md)
+#
+# The tri-repo gate's own context block claims the export "emits the N-generic
+# isomorphism file". The report's audit of that claim found it false:
+#
+#   "for a model defining `make_pbpk_ode` the live path takes
+#    N = len(DEFAULT_ORGAN_NETWORK) = 6. The Jacobian-derived `N` further down
+#    is dead for that model shape and command 1 passes no `--fin-n`. The
+#    emitted file contains only `Fin 6` and `Fin 9`; `_network_for_fin` accepts
+#    just 6 or 14, so `--fin-n 14` is a separate, unproven path. THE GATE
+#    CERTIFIES FIN 6 ONLY."
+#
+# `_network_for_fin` DOES accept 6 and 14 (it raises for anything else). What
+# was unproven is the END-TO-END path for 14: emit the isomorphism file at
+# Fin 14, compile it, and check its axioms.
+#
+# SCOPE OF THE CLAIM: this mission makes the Fin 14 export exist, compile, and
+# be axiom-clean, and it makes the Fin 6 export independently emitted rather
+# than implied. It does NOT promote STANDARD_14_ORGAN_NETWORK to the default:
+# the six-organ model stays the default, because changing the default would
+# invalidate the Fin 6 export, the J[5][2]/J[5][5] pins and the exported
+# lemmas -- a breaking change that wants its own decision, exactly as
+# GLOBAL_MINIMUM_REPORT.md already records.
+
+mission:
+  name: qed-fin14-export
+  goal: |
+    Emit and verify BOTH the Fin 6 (DEFAULT_ORGAN_NETWORK) and the Fin 14
+    (STANDARD_14_ORGAN_NETWORK) Lean isomorphism files, so the "N-generic
+    isomorphism file" claim is true for both sizes.
+
+    TASK 1 - EMIT BOTH FILES
+    VeriTrial/scripts/export_pbpk_to_qed.py already takes `--fin-n` and
+    `--lean-out`. Drive it for BOTH sizes and write two separate files:
+
+      python3 ../VeriTrial/scripts/export_pbpk_to_qed.py \
+        --fin-n 6  --lean-out /tmp/qed_iso_fin6.lean  --out /tmp/fin6_lemmas.txt
+      python3 ../VeriTrial/scripts/export_pbpk_to_qed.py \
+        --fin-n 14 --lean-out /tmp/qed_iso_fin14.lean --out /tmp/fin14_lemmas.txt
+
+    If the exporter does NOT already do this correctly for 14, make it. Do not
+    add a second, parallel export path: one code path parameterized by --fin-n
+    is the thing that keeps the two files from drifting apart.
+
+    TASK 2 - PROVE THE FILES DIFFER IN THE RIGHT WAY
+    The Fin 6 file must contain `Fin 6` and the Fin 14 file must contain
+    `Fin 14`. Neither may contain the other's size. The Fin 14 file must
+    actually carry fourteen states' worth of matrix arms, not six renamed.
+
+    TASK 3 - COMPILE BOTH, AXIOM-CLEAN
+    Both files must compile against the pinned toolchain
+    (leanprover/lean4:v4.33.0, per ../QED/lean-toolchain) with ZERO errors,
+    and `#print axioms` for each headline theorem must be exactly
+    [propext, Classical.choice, Quot.sound] -- no `sorryAx`.
+
+    TASK 4 - `_network_for_fin` MUST ACCEPT BOTH, AND REJECT OTHERS
+    6 -> DEFAULT_ORGAN_NETWORK, 14 -> STANDARD_14_ORGAN_NETWORK, and any
+    other n must RAISE. Pin all three.
+
+    TASK 5 - THE DEFAULT MUST NOT MOVE
+    DEFAULT_ORGAN_NETWORK remains the default. Do not change
+    src/insilico_trial/pbpk/model.py's defaults, do not make 14 the default,
+    and do not change the six-organ model's physiology. The validated
+    six-state model must keep working exactly as it does today.
+
+    TASK 6 - ZERO DOMAIN LEAKAGE IN QED
+    QED stays domain-agnostic. `grep -riE "pbpk|liver|dili|cyp|ka_rate"`
+    over QED/parser.py and QED/agentic_pipeline.py must be empty.
+
+context_files:
+  - ../VeriTrial/scripts/export_pbpk_to_qed.py
+  - ../VeriTrial/src/insilico_trial/pbpk/model.py
+  - agentic_pipeline.py
+  - parser.py
+  - test_pipeline.py
+
+constraints:
+  - "do not change DEFAULT_ORGAN_NETWORK or make Fin 14 the default"
+  - "do not modify lean-toolchain, lakefile.lean, or lake-manifest.json"
+  - "do not introduce sorry anywhere"
+  - "QED stays domain-agnostic: no PBPK/organ/cyp vocabulary in parser.py or agentic_pipeline.py"
+  - "do not weaken the no-sorry gate"
+
+verification:
+  commands:
+    # 1. Both sizes export, and each file carries its own size.
+    - >-
+      python3 -c "import subprocess,sys,pathlib;
+      for n in (6,14):
+        out=f'/tmp/qed_iso_fin{n}.lean';
+        r=subprocess.run([sys.executable,'../VeriTrial/scripts/export_pbpk_to_qed.py','--fin-n',str(n),'--lean-out',out,'--out',f'/tmp/fin{n}_lemmas.txt'],capture_output=True,text=True);
+        assert r.returncode==0, f'export --fin-n {n} failed: '+r.stdout[-800:]+r.stderr[-800:];
+        t=pathlib.Path(out).read_text();
+        assert f'Fin {n}' in t, f'Fin {n} file does not mention Fin {n}';
+        other = 14 if n==6 else 6;
+        assert f'Fin {other}' not in t, f'Fin {n} file also mentions Fin {other}';
+        print(f'Fin {n} exported OK ({len(t)} bytes)')"
+    # 2. Both compile, axiom-clean, no sorry. Compiled with the QED lake env
+    #    so Mathlib resolves; a clean room has no .lake, so this asserts
+    #    against the repo's own build.
+    - >-
+      python3 -c "import subprocess,sys,pathlib;
+      for n in (6,14):
+        f=f'/tmp/qed_iso_fin{n}.lean';
+        r=subprocess.run(['lake','env','lean',f],cwd='.',capture_output=True,text=True);
+        out=r.stdout+r.stderr;
+        assert r.returncode==0, f'Fin {n} failed to compile: '+out[-1500:];
+        assert 'sorry' not in out.lower(), f'Fin {n} mentions sorry: '+out[-800:];
+        print(f'Fin {n} compiles clean')"
+    # 3. `#print axioms` is exactly the three standard axioms for each file.
+    #    The probe is the emitted file plus one `#print axioms` line per
+    #    headline theorem, compiled and read back from stdout.
+    - >-
+      python3 -c "import subprocess,sys,pathlib,re;
+      allowed={'propext','Classical.choice','Quot.sound'};
+      names=['extracted_offDiag_nonneg','extracted_colSum_eq_zero','veritrial_mass_dissipation'];
+      for n in (6,14):
+        f=pathlib.Path(f'/tmp/qed_iso_fin{n}.lean');
+        t=f.read_text();
+        present=[nm for nm in names if re.search(r'theorem\s+'+nm+r'\b',t)];
+        assert present, f'Fin {n} file is missing the headline theorems: '+str(names);
+        probe=pathlib.Path(f'/tmp/axioms_fin{n}.lean');
+        probe.write_text(t+'\n'+'\n'.join('#print axioms '+nm for nm in present)+'\n');
+        r=subprocess.run(['lake','env','lean',str(probe)],cwd='.',capture_output=True,text=True);
+        out=r.stdout+r.stderr;
+        assert r.returncode==0, f'axiom probe for Fin {n} failed: '+out[-1200:];
+        got=[m.strip() for m in re.findall(r'depends on axioms:\s*\[([^\]]*)\]', out)];
+        assert got, f'Fin {n} produced no axiom output: '+out[-600:];
+        assert len(got)==len(present), f'Fin {n}: expected {len(present)} axiom lines, got {got}';
+        for line in got:
+          ax=set(a.strip() for a in line.split(',') if a.strip());
+          assert ax and ax<=allowed, f'Fin {n} theorem depends on unexpected axioms: '+line;
+        print(f'Fin {n} axioms clean: {got}')"
+    # 4. `_network_for_fin` accepts 6 and 14, rejects everything else.
+    - >-
+      python3 -c "import sys; sys.path.insert(0,'../VeriTrial/src');
+      sys.path.insert(0,'../VeriTrial');
+      import importlib.util, pathlib;
+      spec=importlib.util.spec_from_file_location('expmod','../VeriTrial/scripts/export_pbpk_to_qed.py');
+      m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m);
+      from insilico_trial.pbpk.model import DEFAULT_ORGAN_NETWORK, STANDARD_14_ORGAN_NETWORK;
+      assert m._network_for_fin(6)==DEFAULT_ORGAN_NETWORK, 'Fin 6 does not map to DEFAULT_ORGAN_NETWORK';
+      assert m._network_for_fin(14)==STANDARD_14_ORGAN_NETWORK, 'Fin 14 does not map to STANDARD_14_ORGAN_NETWORK';
+      assert len(DEFAULT_ORGAN_NETWORK)==6 and len(STANDARD_14_ORGAN_NETWORK)==14;
+      for bad in (0,1,5,7,13,15,99):
+        try:
+          m._network_for_fin(bad); raise AssertionError(f'_network_for_fin({bad}) should have raised');
+        except ValueError: pass
+      print('_network_for_fin accepts 6 and 14 and rejects the rest')"
+    # 5. The six-organ default is untouched.
+    - >-
+      python3 -c "import sys; sys.path.insert(0,'../VeriTrial/src');
+      from insilico_trial.pbpk.model import DEFAULT_ORGAN_NETWORK, STANDARD_14_ORGAN_NETWORK;
+      assert DEFAULT_ORGAN_NETWORK==('gut','liver','central','peripheral','effect','elim'), DEFAULT_ORGAN_NETWORK;
+      assert len(STANDARD_14_ORGAN_NETWORK)==14;
+      print('DEFAULT_ORGAN_NETWORK unchanged')"
+    # 6. Zero domain leakage in QED.
+    - >-
+      python3 -c "import re,pathlib;
+      pat=re.compile(r'pbpk|liver|dili|cyp|ka_rate', re.I);
+      hits=[(f,i,l) for f in ('parser.py','agentic_pipeline.py')
+            for i,l in enumerate(pathlib.Path(f).read_text().splitlines(),1)
+            if pat.search(l)];
+      assert not hits, 'domain leakage: '+str(hits[:5]);
+      print('zero domain leakage')"
+    # 7. QED's own suites still pass.
+    - "python3 run_tests.py"
+    - "python3 -m pytest test_pipeline.py -q"
+  timeout_seconds: 2400
+
+recovery:
+  max_attempts: 3
+
+review:
+  enabled: true
+  adapter: opencode
+
+budget:
+  max_sends: 24
+  max_wall_seconds: 5400
+
+adapter: opencode
+git_state_guard: true
