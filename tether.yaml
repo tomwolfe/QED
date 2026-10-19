@@ -4,8 +4,8 @@ default_adapter: opencode
 audit_dir: .tether/sessions
 dry_run: false
 log_level: INFO
-command_timeout_seconds: 1800
-verification_timeout_seconds: 600
+command_timeout_seconds: 3600
+verification_timeout_seconds: 1800
 max_attempts: 3
 # Enforce, not the default "warn". The opencode preset below runs with
 # `--auto`, so the opencode CLI stops auto-rejecting in-scope reads (it was

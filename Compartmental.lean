@@ -20,7 +20,7 @@
 -/
 
 import Mathlib.Tactic
-import Mathlib.Basic.Real.Basic
+import Mathlib.Data.Real.Basic
 import Mathlib.LinearAlgebra.Matrix.NonsingularInverse
 import Mathlib.LinearAlgebra.Matrix.Diagonal
 import Mathlib.Analysis.SpecificLimits.Basic
