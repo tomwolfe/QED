@@ -49,4 +49,4 @@ budget:
 adapter: opencode
 adapters:
   opencode:
-    command: ["opencode", "run", "-m", "opencode/space-bunny-free", "{prompt}"]
+    command: ["opencode", "run", "-m", "opencode/beam-free", "{prompt}"]

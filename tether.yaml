@@ -29,4 +29,4 @@ adapters:
     # read-only path is mitigation, not enforcement: it took the gate from
     # consistently red to green roughly 1 run in 3. The safety that `--auto`
     # gives up at the model layer is held by `sandbox_mode: enforce` above.
-    command: ["opencode", "run", "--auto", "-m", "opencode/space-bunny-free", "{prompt}"]
+    command: ["opencode", "run", "--auto", "-m", "opencode/beam-free", "{prompt}"]
