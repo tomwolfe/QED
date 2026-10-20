@@ -69,12 +69,18 @@ mission:
     QED stays domain-agnostic. `grep -riE "pbpk|liver|dili|cyp|ka_rate"`
     over QED/parser.py and QED/agentic_pipeline.py must be empty.
 
+# context_files must stay INSIDE the project directory: Tether rejects an entry
+# that escapes it ("context_files entry escapes the project directory"), so the
+# sibling VeriTrial sources are named in `context` below rather than here.
 context_files:
-  - ../VeriTrial/scripts/export_pbpk_to_qed.py
-  - ../VeriTrial/src/insilico_trial/pbpk/model.py
   - agentic_pipeline.py
   - parser.py
   - test_pipeline.py
+  - scripts/check_fin14_exports.py
+
+context:
+  - "VeriTrial/scripts/export_pbpk_to_qed.py -- the exporter; it takes --fin-n and --lean-out"
+  - "VeriTrial/src/insilico_trial/pbpk/model.py -- DEFAULT_ORGAN_NETWORK and STANDARD_14_ORGAN_NETWORK"
 
 constraints:
   - "DO NOT create any git commits. Leave every change in the working tree, uncommitted. This mission runs with git_state_guard: true, which compares the repo HEAD against a checkpoint taken at session start; a commit made during the session is reported as 'history was rewritten' and the mission fails with verification skipped -- even when the work is correct and the tests pass. The guard is strict on purpose, so the fix is to not commit."
