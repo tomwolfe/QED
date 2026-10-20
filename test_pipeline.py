@@ -869,18 +869,15 @@ def test_pbpk_mass_conservation_witness_proves_no_sorry() -> None:
 
 
 def test_pbpk_gut_absorption_identity_proves() -> None:
-    """The gut absorption identity is Real-typed, so it needs Mathlib; without
-    Mathlib (a clean-room checkout of the committed tree has no `.lake`) the
-    goal cannot compile and the pipeline must fail closed, never with sorry."""
+    """The gut absorption identity needs no division and no subtraction, so
+    the context-aware selection types it ℕ: it is an identity that holds in
+    any commutative monoid, so it verifies in every environment (with or
+    without Mathlib) and never carries a sorry."""
     from agentic_pipeline import LeanAgenticPipeline
     pipeline = LeanAgenticPipeline(use_mathlib=True)
     res = pipeline.run("ka * A_gut = ka * A_gut")
-    if pipeline.use_mathlib:
-        assert res["success"] is True
-        assert "sorry" not in res["lean_code"]
-    else:
-        assert res["success"] is False
-        assert "sorry" not in res.get("lean_code", "")
+    assert res["success"] is True
+    assert "sorry" not in res["lean_code"]
 
 
 def test_pbpk_ode_tactic_policy_includes_distributive_field() -> None:
@@ -3344,3 +3341,145 @@ def test_execute_with_initial_code_never_echoes_a_sorry_artifact() -> None:
     res = p._execute_with_initial_code("theorem qed_goal : 1 = 1\n  sorry\n")
     assert res["success"] is False
     assert "sorry" not in res.get("lean_code", "")
+
+
+# ---------------------------------------------------------------------------
+# qed-03-type-inference: context-aware type selection.
+#
+# The type of a statement used to be guessed from the TEXT with regular
+# expressions, which could not tell a negative LITERAL from a binary
+# subtraction, nor a numeric denominator from a symbolic one.  Two things
+# followed from that:
+#
+#   1. every equality containing a `*` was typed ℝ (the relation operator
+#      `=` matched the "inequality" pattern), so a plain product was
+#      elaborated in a field it did not need;
+#   2. the type the pipeline REPORTED was not the type the generated Lean
+#      was elaborated at, so a statement that is FALSE in ℤ could be
+#      "verified" because ℕ subtraction truncates (`1 - 2 = 0`).
+#
+# The tests below pin the AST-driven selection AND the fidelity of the
+# emitted statement: what the pipeline claims to have checked is what Lean
+# actually checked.  The selection tests are compiler-free; the honesty
+# tests need a prover.
+# ---------------------------------------------------------------------------
+
+
+def test_suggest_type_joins_mixed_expressions() -> None:
+    """A statement that mixes constructs is read at the strongest type any
+    of its parts needs -- not at the first type that happens to match."""
+    from agentic_pipeline import LeanAgenticPipeline
+    p = LeanAgenticPipeline()
+    # division + subtraction -> ℚ (the subtraction alone would say ℤ)
+    assert p._suggest_type("x / 2 - 1 = 0") == "Rat"
+    # division + subtraction + a symbolic denominator -> ℝ
+    assert p._suggest_type("x / y - 1 = 0") == "Real"
+    # a negative literal joined with a division -> ℚ
+    assert p._suggest_type("-1 + x / 2 = 0") == "Rat"
+    # a negative literal joined with a symbolic division -> ℝ
+    assert p._suggest_type("-1 + x / y = 0") == "Real"
+
+
+def test_suggest_type_reads_the_denominator_not_the_text() -> None:
+    """A numeric denominator is exact rational arithmetic (ℚ); a symbolic
+    one is a field (ℝ).  The text heuristic could not tell `x / 2` from
+    `x / (2 + 1)` -- both are exact, neither needs a field."""
+    from agentic_pipeline import LeanAgenticPipeline
+    p = LeanAgenticPipeline()
+    assert p._suggest_type("x / (2 + 1) = y") == "Rat"
+    assert p._suggest_type("x / y = z") == "Real"
+
+
+def test_suggest_type_product_equality_is_not_real() -> None:
+    """`a * b = c` is an equality with a product, not an inequality: it
+    needs no field, so it is read at ℕ."""
+    from agentic_pipeline import LeanAgenticPipeline
+    p = LeanAgenticPipeline()
+    assert p._suggest_type("a * b = c") == "Nat"
+    assert p._suggest_type("2 * x = x * 2") == "Nat"
+    assert p._suggest_type("(a + b)^2 = a^2 + 2ab + b^2") == "Nat"
+    assert p._suggest_type("ka * A_gut = ka * A_gut") == "Nat"
+
+
+def test_suggest_type_bare_comparison_gets_no_field() -> None:
+    """A bare comparison is left at ℕ: a positivity hypothesis for it would
+    be the conclusion.  A comparison over a product is a positivity claim
+    ABOUT THE FACTORS, and `positivity` needs ℝ to discharge it."""
+    from agentic_pipeline import LeanAgenticPipeline
+    p = LeanAgenticPipeline()
+    assert p._suggest_type("x > 0") == "Nat"
+    assert p._suggest_type("x >= 0") == "Nat"
+    assert p._suggest_type("k * x > 0") == "Real"
+
+
+def test_generate_lean_code_does_not_corrupt_binary_subtraction() -> None:
+    """The old `(-\\d+)` annotation matched the `-` of a binary subtraction,
+    so `2-1 = 1` was emitted as `2(-1 : Int) = 1` -- which is not Lean."""
+    from agentic_pipeline import LeanAgenticPipeline
+    p = LeanAgenticPipeline(use_mathlib=True)
+    code = p.generate_lean_code("2-1 = 1", [])
+    assert "2(-1" not in code
+    assert "2-1" in code
+    assert ": Int" in code
+
+
+def test_generate_lean_code_closed_statement_is_ascribed_at_the_inferred_type() -> None:
+    """A closed statement has no variable declaration to carry its type, so
+    it must be ascribed inside the statement -- otherwise Lean elaborates the
+    numerals at ℕ, where subtraction and division TRUNCATE."""
+    from agentic_pipeline import LeanAgenticPipeline
+    p = LeanAgenticPipeline(use_mathlib=True)
+    code = p.generate_lean_code("1 - 2 = 0", [])
+    assert "(1 - 2 : Int)" in code
+    assert "(0 : Int)" in code
+
+
+def test_generate_lean_code_natural_statement_is_not_ascribed() -> None:
+    """A statement that needs no type beyond ℕ is left alone: an
+    unnecessary annotation would change the theorem for nothing."""
+    from agentic_pipeline import LeanAgenticPipeline
+    p = LeanAgenticPipeline(use_mathlib=True)
+    code = p.generate_lean_code("2 + 2 = 4", [])
+    assert ": Int" not in code
+    assert ": Rat" not in code
+    assert "2 + 2 = 4" in code
+
+
+def test_closed_subtraction_is_not_verified_by_nat_truncation() -> None:
+    """`1 - 2 = 0` is FALSE in ℤ, and true in ℕ only because ℕ subtraction
+    truncates.  The pipeline must not report a truncated statement as
+    verified -- and it must never do it with a sorry."""
+    from agentic_pipeline import LeanAgenticPipeline
+    res = LeanAgenticPipeline(use_mathlib=True).run("1 - 2 = 0")
+    assert res["success"] is False
+    assert "sorry" not in res.get("lean_code", "")
+
+
+def test_closed_negative_result_is_not_verified_by_nat_truncation() -> None:
+    """`0 - 1 = 0` truncates to `0 = 0` at ℕ; at ℤ it is false."""
+    from agentic_pipeline import LeanAgenticPipeline
+    res = LeanAgenticPipeline(use_mathlib=True).run("0 - 1 = 0")
+    assert res["success"] is False
+    assert "sorry" not in res.get("lean_code", "")
+
+
+def test_closed_division_is_not_verified_by_nat_truncation() -> None:
+    """`5 / 2 = 2` is true at ℕ (truncating division) and false at ℚ."""
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline(use_mathlib=True)
+    if pipeline.use_mathlib:
+        res = pipeline.run("5 / 2 = 2")
+        assert res["success"] is False
+        assert "sorry" not in res.get("lean_code", "")
+
+
+def test_mass_conservation_witness_still_verifies_at_int() -> None:
+    """The regression guard in the other direction: a TRUE statement must
+    still be verified after the type selection changed.  The witness is a
+    sum of signed integers, so it is read at ℤ and must still prove."""
+    from agentic_pipeline import LeanAgenticPipeline
+    res = LeanAgenticPipeline(use_mathlib=True).run(
+        "-6 + 9 + -13 + 4 + 6 + 0 = 0")
+    assert res["success"] is True
+    assert "sorry" not in res["lean_code"]
+    assert res["verification"]["axioms_check"] == "passed"

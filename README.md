@@ -156,7 +156,7 @@ Generates verified proof without `sorry`.
 ```bash
 python3 agentic_pipeline.py "x + 0 = x"
 ```
-Generates: `theorem qed_goal (x : Int) : x + 0 = x := by rfl` (no `sorry`).
+Generates: `theorem qed_goal (x : Nat) : x + 0 = x := by rfl` (no `sorry`).
 
 ### Polynomial Identity (Mathlib required)
 

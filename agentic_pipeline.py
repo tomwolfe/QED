@@ -28,6 +28,7 @@ from parser import (
     involves_derivative,
     is_numeric_equality,
     _collect_vars,
+    _is_numeric_only,
     ASTNode,
     BinOp,
     Eq,
@@ -37,6 +38,7 @@ from parser import (
     Gt,
     Ge,
     Neg,
+    Num,
 )
 
 
@@ -61,6 +63,71 @@ def _collect_division_numerator_vars(node: object, result: set[str]) -> None:
     elif isinstance(node, (Eq, Ne, Lt, Le, Gt, Ge)):
         _collect_division_numerator_vars(node.left, result)
         _collect_division_numerator_vars(node.right, result)
+
+
+# ---------------------------------------------------------------------------
+# Context-aware type selection.
+#
+# The type a statement must be read at is the JOIN of the requirements its
+# AST imposes, over the lattice Nat < Int < Rat < Real.  A statement that
+# mixes constructs (a division AND a negation, say) is read at the strongest
+# type any of its parts needs -- not at the first type that happens to
+# match.
+#
+# The requirements are read off the AST rather than off the text: a text
+# heuristic cannot tell a negative LITERAL from a binary subtraction, nor a
+# numeric denominator from a symbolic one, and both differences change the
+# claim the statement makes.
+# ---------------------------------------------------------------------------
+
+_TYPE_LATTICE: Tuple[str, ...] = ('Nat', 'Int', 'Rat', 'Real')
+
+# The weakest type that can support each requirement.
+_TYPE_REQUIREMENTS: Dict[str, str] = {
+    'NEGATIVE': 'Int',     # a negated term: Nat has no negation
+    'SUBTRACTION': 'Int',  # Nat subtraction truncates, so it changes the claim
+    'RATIONAL': 'Rat',     # division by a numeric literal
+    'FIELD': 'Real',       # division by a symbolic denominator
+    'ORDERED': 'Real',     # an ordered claim over a product or a ratio
+    'ODE': 'Real',         # rate-of-change notation
+}
+
+
+def _join_types(types: List[str]) -> str:
+    """The weakest type in the lattice that satisfies every type in *types*."""
+    strongest = 'Nat'
+    for candidate in types:
+        if candidate not in _TYPE_LATTICE:
+            continue
+        if _TYPE_LATTICE.index(candidate) > _TYPE_LATTICE.index(strongest):
+            strongest = candidate
+    return strongest
+
+
+def _split_relation(expression: str) -> Optional[Tuple[str, str]]:
+    """Split a statement at its top-level relation operator.
+
+    Returns ``(left, right)`` -- the two sides with the text they were
+    written with, so ascribing them does not change the statement -- or None
+    when the statement has no top-level relation.
+    """
+    depth = 0
+    i = 0
+    n = len(expression)
+    while i < n:
+        ch = expression[i]
+        if ch == '(':
+            depth += 1
+        elif ch == ')':
+            depth -= 1
+        elif depth == 0:
+            two = expression[i:i + 2]
+            if two in ('!=', '<=', '>='):
+                return expression[:i].strip(), expression[i + 2:].strip()
+            if ch in ('=', '<', '>'):
+                return expression[:i].strip(), expression[i + 1:].strip()
+        i += 1
+    return None
 
 
 class LeanAgenticPipeline:
@@ -249,66 +316,132 @@ class LeanAgenticPipeline:
         
         return True, ""
     
+    def _parse_statement(self, expression: str) -> Optional[ASTNode]:
+        """The AST of a statement, or None when it cannot be parsed."""
+        eq, _ = parse_equation(expression)
+        if eq is not None:
+            return eq
+        tokens = tokenize(expression)
+        tokens = normalize_implicit_multiplication(tokens)
+        node, _ = parse_expression(tokens)
+        return node
+
+    def _type_requirements(self, expression: str) -> set[str]:
+        """The type requirements the statement's AST imposes.
+
+        Returns a subset of the keys of :data:`_TYPE_REQUIREMENTS`.  A
+        statement that cannot be parsed imposes none, which keeps the
+        selection fail-safe: it falls back to Nat, the weakest type.
+        """
+        # ODE / rate-of-change notation lives on ℝ.
+        if is_ode(expression) or involves_derivative(expression):
+            return {'ODE'}
+        node = self._parse_statement(expression)
+        if node is None:
+            return set()
+        requirements: set[str] = set()
+        self._collect_type_requirements(node, requirements)
+        return requirements
+
+    @classmethod
+    def _collect_type_requirements(
+        cls,
+        node: Optional[ASTNode],
+        requirements: set[str],
+    ) -> None:
+        """Collect the type requirements of *node* into *requirements*."""
+        if node is None:
+            return
+        if isinstance(node, Neg):
+            # A negation needs a signed type: ℕ has no negation.
+            requirements.add('NEGATIVE')
+            cls._collect_type_requirements(node.expr, requirements)
+            return
+        if isinstance(node, BinOp):
+            if node.op == '-':
+                # ℕ subtraction TRUNCATES, so at ℕ the statement would be a
+                # different claim from the one that was written.
+                requirements.add('SUBTRACTION')
+            elif node.op == '/':
+                if _is_numeric_only(node.right):
+                    # An exact numeric ratio: rational arithmetic.
+                    requirements.add('RATIONAL')
+                else:
+                    # A symbolic denominator: the division is a field
+                    # operation, so the statement lives on ℝ.
+                    requirements.add('FIELD')
+            cls._collect_type_requirements(node.left, requirements)
+            cls._collect_type_requirements(node.right, requirements)
+            return
+        if isinstance(node, (Eq, Ne, Lt, Le, Gt, Ge)):
+            if isinstance(node, (Lt, Le, Gt, Ge)):
+                cls._collect_ordered_requirement(node.left, node.right, requirements)
+            cls._collect_type_requirements(node.left, requirements)
+            cls._collect_type_requirements(node.right, requirements)
+
+    @staticmethod
+    def _collect_ordered_requirement(
+        left: Optional[ASTNode],
+        right: Optional[ASTNode],
+        requirements: set[str],
+    ) -> None:
+        """An ordered claim over a product or a ratio needs an ordered field.
+
+        A bare comparison (``x > 0``) is left alone: a positivity hypothesis
+        for it would be the conclusion, so the pipeline must not invent one.
+        A comparison whose non-zero side is a product or a ratio
+        (``k * x > 0``) is a positivity claim about the factors, and
+        ``positivity`` needs ℝ to discharge it.
+        """
+        for side in (left, right):
+            if isinstance(side, Num):
+                continue
+            if contains_op(side, '*') or contains_op(side, '/'):
+                requirements.add('ORDERED')
+
     def _suggest_type(self, expression: str) -> str:
         """
         Suggest appropriate type based on expression content.
-        
+
+        The type is the join of the requirements the statement's AST imposes
+        (see :meth:`_type_requirements`), so a statement that mixes
+        constructs is read at the strongest type any of its parts needs.
+
         Returns:
             Type string: 'Nat', 'Int', 'Rat', or 'Real'
         """
-        # ODE expressions and rate-of-change notation live on ℝ
-        if is_ode(expression) or involves_derivative(expression):
-            return 'Real'
+        requirements = self._type_requirements(expression)
+        return _join_types([
+            _TYPE_REQUIREMENTS[name]
+            for name in requirements
+            if name in _TYPE_REQUIREMENTS
+        ])
 
-        # Symbolic division (division where the divisor is not a pure numeric
-        # literal) requires a field – Real / Rat.  We prefer 'Real' when the
-        # expression also contains subtraction or continuous variables, but
-        # even pure symbolic division is a field operation, so map to 'Real'
-        # whenever the AST confirms rational structure.
-        if '/' in expression:
-            eq, _ = parse_equation(expression)
-            node = eq if eq is not None else None
-            if node is None:
-                # Fallback: parse as bare expression
-                tokens = tokenize(expression)
-                tokens = normalize_implicit_multiplication(tokens)
-                node, _ = parse_expression(tokens)
-            if node is not None and has_rational_structure(node):
-                return 'Real'
-            # Plain numeric division (e.g. 4/2) stays Rat
-            return 'Rat'
-        
-        # Check for negative numbers or subtraction -> Int
-        # Negative literals: -1, -2, etc.
-        if re.search(r'-\d', expression):
-            return 'Int'
-        # Subtraction patterns: a - b, 0 - x, (a - b)
-        if re.search(r'(?<!\w)-\(', expression) or re.search(r'\w\s*-\s*\w', expression):
-            return 'Int'
-        # Parenthesized subtraction: (a - b)
-        if re.search(r'\([^)]*-\s*\w[^)]*\)', expression):
-            return 'Int'
-        
-        # Inequalities involving multiplication of symbolic variables
-        # (e.g. k * x > 0) need Real for positivity hypotheses.
-        if re.search(r'[><=!]', expression) and re.search(r'\w\s*\*\s*\w', expression):
-            return 'Real'
-        
-        # Default to Nat for non-negative
-        return 'Nat'
-    
     def _get_var_type(self, variables: List[str], expression: str) -> str:
         """
         Get type for variables based on expression context.
-        
+
         Args:
             variables: List of variable names
             expression: Full expression string
-            
+
         Returns:
             Type string for variables
         """
-        return self._suggest_type(expression)
+        ideal = self._suggest_type(expression)
+        if variables:
+            # An OPEN statement carries its type in the variable
+            # declarations, so the ideal type is used as-is.
+            return ideal
+        # A CLOSED statement has no declaration to carry its type: the type
+        # can only be pinned by ascribing it inside the statement, and only
+        # a type the environment can evaluate may be used.  Core ``Rat`` is
+        # a computable rational that ``decide``/``simp`` cannot evaluate
+        # (Mathlib's ``Rat`` = ℚ can, via ``norm_num``/``ring``), so without
+        # Mathlib a closed rational statement keeps Lean's default ℕ.
+        if ideal == 'Rat' and not getattr(self, 'use_mathlib', False):
+            return 'Nat'
+        return ideal
     
     def check_for_sorry(self, lean_source: str, compiler_output: str) -> Tuple[bool, str]:
         """
@@ -907,7 +1040,10 @@ class LeanAgenticPipeline:
         
         # Build imports and theorem header
         if var_type == 'Real':
-            # Real-typed theorems live in a field; emit [Field ℝ] instance.
+            # Real-typed theorems live in ℝ, whose canonical instances are
+            # already `Field ℝ` and `LinearOrderedField ℝ`.  An explicit
+            # `[Field ℝ]` binder would SHADOW those instances and block
+            # ring/field_simp, so none is emitted.
             # `Mathlib.Data.Real.Basic` is the canonical module name. The old
             # `Mathlib.Basic.*.Basic` module it replaces does not exist at the
             # pinned mathlib version (the leftover .olean from the old
@@ -946,74 +1082,53 @@ class LeanAgenticPipeline:
                     (all_expr_vars_ge - div_vars) & set(filtered_vars)
                 )
 
-            # Detect positivity/strict-inequality goals: these need
-            # [LinearOrderedField ℝ] (not [Field ℝ]) so that Mathlib's
-            # `positivity` tactic can see the ordered-field structure.
-            # Plain `ℝ` variables are automatically LinearOrderedField.
-            # Must be computed AFTER hyp_vars is finalized.
-            is_positivity_goal = (
-                hyp_vars
-                and isinstance(eq_node, (Gt, Lt, Ge, Le))
-            )
+            # The positivity hypotheses are emitted for a goal that
+            # `positivity` can discharge over ℝ (a LinearOrderedField, which
+            # plain `ℝ` variables already are), so no extra instance binder
+            # is needed.  A goal with no hypothesis at all keeps the plain
+            # `ℝ` type.
 
             if filtered_vars:
                 params = ' '.join([f'({v} : ℝ)' for v in filtered_vars])
-                if hyp_vars or nonstrict_hyp_vars:
-                    strict_hyps = ' '.join([f'(h{v} : 0 < {v})' for v in hyp_vars])
-                    nonstrict_hyps = ' '.join([f'(hn{v} : 0 ≤ {v})' for v in nonstrict_hyp_vars])
-                    all_hyps = ' '.join(h for h in [strict_hyps, nonstrict_hyps] if h)
-                    if is_positivity_goal:
-                        # Omit [Field ℝ] so positivity sees LinearOrderedField
-                        theorem = (
-                            f"theorem qed_goal {params} {all_hyps} "
-                            f": {expression} := by\n"
-                        )
-                    else:
-                        theorem = (
-                            f"theorem qed_goal {params} {all_hyps} "
-                            f": {expression} := by\n"
-                        )
+                strict_hyps = ' '.join([f'(h{v} : 0 < {v})' for v in hyp_vars])
+                nonstrict_hyps = ' '.join([f'(hn{v} : 0 ≤ {v})' for v in nonstrict_hyp_vars])
+                all_hyps = ' '.join(h for h in [strict_hyps, nonstrict_hyps] if h)
+                if all_hyps:
+                    theorem = (
+                        f"theorem qed_goal {params} {all_hyps} "
+                        f": {expression} := by\n"
+                    )
                 else:
-                    if nonstrict_hyp_vars:
-                        nonstrict_hyps = ' '.join([f'(hn{v} : 0 ≤ {v})' for v in nonstrict_hyp_vars])
-                        theorem = (
-                            f"theorem qed_goal {params} {nonstrict_hyps} "
-                            f": {expression} := by\n"
-                        )
-                    else:
-                        theorem = f"theorem qed_goal {params} : {expression} := by\n"
+                    theorem = f"theorem qed_goal {params} : {expression} := by\n"
             else:
                 theorem = f"theorem qed_goal : {expression} := by\n"
         else:
             # Build theorem statement
             if filtered_vars:
+                # An OPEN statement carries its type in the variable
+                # declarations, so Lean elaborates it at that type.
                 params = ' '.join([f'({v} : {var_type})' for v in filtered_vars])
                 theorem = f"theorem qed_goal {params} : {expression} := by\n"
             else:
-                # Add type annotation for negative numbers or division
-                if var_type in ('Int', 'Rat'):
-                    # Annotate the expression with the appropriate type
-                    if '-' in expression and var_type == 'Int':
-                        # For negative numbers, add type annotation only to negative literals
-                        annotated_expr = re.sub(r'(-\d+)', r'(\1 : Int)', expression)
-                        theorem = f"theorem qed_goal : {annotated_expr} := by\n"
-                    else:
-                        # The Rat branch used to sit here as a separate
-                        # `elif '/' in expression and var_type == 'Rat'`
-                        # whose body was BYTE-IDENTICAL to this one, so it
-                        # could never change the output. That made it a
-                        # provably-equivalent mutation target: negating the
-                        # guard produced the same theorem string, and no test
-                        # could kill it by construction. The guard is
-                        # retained in a comment so the intent (division over
-                        # Rat needs no extra annotation because the literals
-                        # are already rational) is not lost, and the dead
-                        # branch is gone.
-                        theorem = f"theorem qed_goal : {expression} := by\n"
-                else:
+                # A CLOSED statement has no declaration to carry its type:
+                # Lean elaborates the numerals at ℕ, where subtraction and
+                # division TRUNCATE, so the statement Lean would check would
+                # not be the statement that was written (`1 - 2 = 0` is true
+                # at ℕ and false at ℤ).  Ascribing BOTH sides of the relation
+                # pins the whole statement at the type that was inferred.
+                sides = None
+                if var_type in ('Int', 'Rat') and self._type_requirements(expression):
+                    sides = _split_relation(expression)
+                if sides is None:
                     theorem = f"theorem qed_goal : {expression} := by\n"
+                else:
+                    lhs, rhs = sides
+                    theorem = (
+                        f"theorem qed_goal : ({lhs} : {var_type}) = "
+                        f"({rhs} : {var_type}) := by\n"
+                    )
             imports = ""
-        
+
         # Add imports if using Mathlib (non-Real types)
         if self.use_mathlib and var_type != 'Real':
             imports = "import Mathlib.Tactic\n\n"

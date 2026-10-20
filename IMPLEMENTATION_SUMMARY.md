@@ -62,9 +62,10 @@ A CLI-based agentic pipeline that converts constrained mathematical statements (
    - Generates valid Lean 4 theorem statements
    - Adds `import Mathlib.Tactic` when Mathlib tactics are needed
    - Declares free variables as theorem parameters
-   - Chooses type-appropriate defaults: Nat for non-negative, Int for negative, Rat for division
+   - Chooses type-appropriate defaults from the statement's AST (see 10)
    - Generates valid Lean syntax with proper spacing
-   - Adds explicit type annotations for negative numbers and division
+   - Ascribes the type of a closed statement inside the statement, so Lean
+     elaborates it at the type the pipeline inferred
 
 9. **Tactic Policy (AST-Aware)** ✓ (Hardened via Tether Mission qed-04)
    - Tactic candidates selected based on parsed AST structure (not keyword-based)
@@ -76,10 +77,21 @@ A CLI-based agentic pipeline that converts constrained mathematical statements (
    - Otherwise defaults to: rfl, simp, norm_num, decide, ring, then remaining candidates
    - Selection is purely AST-driven; there is no special-casing for variable presence or sign
 
-10. **Type Inference (Improved)** ✓
-    - _suggest_type returns Nat for non-negative expressions, Int for negative, Rat for division
-    - _get_var_type considers expression context for variable typing
-    - Proper type selection prevents Lean type mismatch errors
+10. **Type Inference (Context-Aware)** ✓ (Hardened via Tether Mission qed-03)
+    - The type is the JOIN of the requirements the statement's AST imposes,
+      over the lattice Nat < Int < Rat < Real: a statement that mixes a
+      division with a negation is read at the strongest type any of its
+      parts needs
+    - The requirements are read off the AST, not off the text: a negative
+      LITERAL, a binary subtraction, a numeric denominator and a symbolic
+      denominator are four different things, and the text heuristics could
+      not tell them apart
+    - _suggest_type returns the joined type; _get_var_type returns the type
+      to EMIT (open statements carry it in the variable declarations, closed
+      statements get it ascribed inside the statement)
+    - Proper type selection prevents Lean type mismatch errors, and stops
+      the pipeline from "verifying" a statement that is false in the type
+      it claimed (Nat subtraction and division truncate)
 
 ### Test Results (comprehensive unit tests passing)
 
@@ -97,7 +109,13 @@ A CLI-based agentic pipeline that converts constrained mathematical statements (
 - "x + 0 = x" suggests type "Nat" ✓
 - "-1 + 1 = 0" suggests type "Int" ✓
 - "x / 2 = y" suggests type "Rat" ✓
+- "a * b = c" suggests type "Nat" (a product equality needs no field) ✓
+- "x / (2 + 1) = y" suggests type "Rat" (a numeric denominator is exact) ✓
+- "x / y = z" suggests type "Real" (a symbolic denominator is a field) ✓
+- Mixed statements join their requirements ("x / 2 - 1 = 0" is "Rat") ✓
 - Proper type annotations generated ✓
+- A closed statement is ascribed at the inferred type, so Lean elaborates it
+  there: "1 - 2 = 0" is no longer "verified" by Nat truncation ✓
 
 **Tactic Selection Tests** ✓
 - Algebraic expressions get ring as first candidate ✓
