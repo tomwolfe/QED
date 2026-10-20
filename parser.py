@@ -161,12 +161,25 @@ class Imp(ASTNode):
 # into letter pairs.
 _WORD = r'A-Za-z0-9_\\'
 
+# A LaTeX control word (backslash + letters) ends at the first non-letter.
+# Every control-word expansion below must enforce that: without the boundary
+# a longer control word is truncated and its tail leaks into the statement as
+# an identifier (``\cdotp`` -> ``*p``, i.e. the variable ``p``;
+# ``\divide`` -> ``/ide``; ``\neqq`` -> ``!=q``).  The tail then reaches
+# Lean as part of a *different* statement, so the boundary is what makes an
+# unsupported control word fail closed instead of silently mutating the
+# statement.
+_LATEX_CTRL_END = r'(?![A-Za-z])'
+
 
 def _expand_frac_braces(expr: str) -> str:
-    """Rewrite braced ``\\frac{num}{den}`` into ``(num) / (den)``.
+    """Rewrite braced ``\\frac{num}{den}`` into ``((num) / (den))``.
 
     Parentheses preserve the grouping the fraction denotes, so the generic
-    expression grammar can consume the result.
+    expression grammar can consume the result.  The whole fraction is
+    wrapped, not just its two sides: a fraction is ONE operand, so
+    ``\\frac{a}{b}^2`` has to be ``((a) / (b)) ^ 2`` and not
+    ``(a) / (b) ^ 2`` -- the latter is a different statement.
     """
     result = expr
     for _ in range(8):  # bounded: nested fractions converge quickly
@@ -174,8 +187,52 @@ def _expand_frac_braces(expr: str) -> str:
         if not match:
             break
         numerator, denominator = match.group(1), match.group(2)
-        replacement = '(' + numerator + ') / (' + denominator + ')'
+        replacement = '((' + numerator + ') / (' + denominator + '))'
         result = result[:match.start()] + replacement + result[match.end():]
+    return result
+
+
+def _expand_braced_scripts(expr: str) -> str:
+    """Rewrite braced ``^{...}`` / ``_{...}`` into the plain operator vocabulary.
+
+    ``a^{2}`` -> ``a^(2)``: the braces become real parentheses, so the
+    grouping the power denotes survives (``a^{b+c}`` must stay ``a^(b+c)``
+    and not degrade into ``(a^b)+c``).
+
+    ``x_{1}`` -> ``x_1``: a subscript is part of the *name*, not an
+    operator, so only the braces are dropped.
+
+    Two kinds of subscript are deliberately left alone so the tokenizer
+    refuses them instead of merging two names or re-reading a group as a
+    product: a subscript whose content is not a name tail (``a_{i,j}``,
+    ``a_{i-1}``) and a subscript followed by more name characters
+    (``a_{i}j``).
+    """
+    result = expr
+    for _ in range(8):  # bounded: nested scripts converge quickly
+        new_result = re.sub(r'\^\{([^{}]*)\}', r'^(\1)', result)
+        new_result = re.sub(
+            r'_\{([A-Za-z0-9_]+)\}(?![A-Za-z0-9_])', r'_\1', new_result)
+        if new_result == result:
+            break
+        result = new_result
+    return result
+
+
+def _expand_latex_structures(expr: str) -> str:
+    """Expand braced fractions and braced scripts until the text is stable.
+
+    The two rewrites feed each other (``\\frac{a_{1}}{b}`` only becomes a
+    fraction once its subscript is unwrapped; ``a^{\\frac{b}{c}}`` only
+    becomes a power once its fraction is unwrapped), so they are applied
+    together until nothing changes.
+    """
+    result = expr
+    for _ in range(8):  # bounded: nested constructs converge quickly
+        new_result = _expand_frac_braces(_expand_braced_scripts(result))
+        if new_result == result:
+            break
+        result = new_result
     return result
 
 
@@ -186,30 +243,43 @@ def expand_latex_macros(expr: str) -> str:
     two-letter macros are shredded by the letter-pair rule
     (``a \\le b`` -> ``['a', 'l', '*', 'e', 'b']``).
 
-    Handles ``\\frac{a}{b}``, ``\\cdot``/``\\times``, ``\\div``,
-    ``\\le``/``\\leq``, ``\\ge``/``\\geq``, ``\\neq``/``\\ne``,
-    ``\\left``/``\\right``, thin spaces, and the typographic Unicode
-    operators (``×``, ``÷``, ``≤``, ``≥``, ``≠``, ``−``).
+    Handles ``\\frac{a}{b}`` (also ``\\dfrac``/``\\tfrac``),
+    ``\\cdot``/``\\times``, ``\\div``, ``\\le``/``\\leq``/``\\lt``,
+    ``\\ge``/``\\geq``/``\\gt``, ``\\neq``/``\\ne``, ``\\left``/``\\right``,
+    braced powers and subscripts (``a^{2}``, ``x_{1}``), thin spaces, and
+    the typographic Unicode operators (``×``, ``÷``, ``≤``, ``≥``, ``≠``,
+    ``−``).
+
+    A control word ends at the first non-letter, and every control-word
+    expansion here enforces that (see ``_LATEX_CTRL_END``): without the
+    boundary a longer control word is truncated and its tail leaks into the
+    statement as an identifier (``\\cdotp`` -> ``*p``), i.e. a *different*
+    statement reaches Lean.
 
     A macro that is *not* listed here (``\\pm``, ``\\sqrt{}``, greek names)
     is deliberately left in place: the tokenizer then refuses it, so an
     unsupported macro fails closed instead of leaking into the statement as
     the ASCII identifier ``pm``/``sqrt``/``alpha``.
     """
-    result = _expand_frac_braces(expr)
+    # ``\dfrac``/``\tfrac`` are the display/text spellings of ``\frac``:
+    # same meaning, so they are rewritten before the braced form is read.
+    result = re.sub('\\\\(?:d|t)frac' + _LATEX_CTRL_END, '\\\\frac', expr)
+    result = _expand_latex_structures(result)
     # Longest macros first: ``\leq`` must win over ``\le``.
     replacements = [
-        ('\\\\left', ''),
-        ('\\\\right', ''),
-        ('\\\\cdot', '*'),
-        ('\\\\times', '*'),
-        ('\\\\div', '/'),
-        ('\\\\leq', '<='),
-        ('\\\\geq', '>='),
-        ('\\\\le', '<='),
-        ('\\\\ge', '>='),
-        ('\\\\neq', '!='),
-        ('\\\\ne', '!='),
+        ('\\\\left' + _LATEX_CTRL_END, ''),
+        ('\\\\right' + _LATEX_CTRL_END, ''),
+        ('\\\\cdot' + _LATEX_CTRL_END, '*'),
+        ('\\\\times' + _LATEX_CTRL_END, '*'),
+        ('\\\\div' + _LATEX_CTRL_END, '/'),
+        ('\\\\lt' + _LATEX_CTRL_END, '<='),
+        ('\\\\gt' + _LATEX_CTRL_END, '>='),
+        ('\\\\leq' + _LATEX_CTRL_END, '<='),
+        ('\\\\geq' + _LATEX_CTRL_END, '>='),
+        ('\\\\le' + _LATEX_CTRL_END, '<='),
+        ('\\\\ge' + _LATEX_CTRL_END, '>='),
+        ('\\\\neq' + _LATEX_CTRL_END, '!='),
+        ('\\\\ne' + _LATEX_CTRL_END, '!='),
         ('\\\\,', ' '),
         ('\\\\;', ' '),
         ('\\\\!', ' '),
@@ -248,6 +318,36 @@ def normalize_implicit_multiplication_expression(expr: str) -> str:
     letter pair is always read as a product ('ab' -> 'a * b'), so a bare
     two-letter name such as 'ka' in '(ka + Ag)2' is still read as 'k * a'.
     Write 'k_rate' style names with an underscore, or an explicit ' * '.
+
+    The full contract, from the raw text to the AST the prover sees:
+
+    ==================  ======================  ==========================
+    raw text             normalized               AST
+    ==================  ======================  ==========================
+    '2a'                 '2 * a'                  2 * a
+    '2ab'                '2 * a * b'              (2 * a) * b
+    '3xyz'               '3 * x * y * z'          ((3 * x) * y) * z
+    'ab'                 'a * b'                  a * b
+    'a2'                 'a * 2'                  a * 2
+    '(a+b)2'             '(a+b) * 2'              (a + b) * 2
+    '(a+b)(c+d)'         '(a+b) * (c+d)'          (a + b) * (c + d)
+    '2(a+b)'             '2 * (a+b)'              2 * (a + b)
+    'a(b+c)'             'a * (b+c)'              a * (b + c)
+    'ka_rate'            'ka_rate'                ka_rate
+    'A_1ab'              'A_1ab'                  A_1ab
+    'Nat.succ 0'         'Nat.succ 0'             Nat.succ * 0
+    '\\frac{a}{b}'       '((a) / (b))'            a / b
+    'a^{2}'              'a^(2)'                  a ^ 2
+    'x_{1}'              'x_1'                    x_1
+    'a \\le b'           'a <= b'                 a <= b (relation)
+    'a \\cdotp b'        (unchanged)              rejected (fails closed)
+    ==================  ======================  ==========================
+
+    The last row is the point of the word-boundary rules: a *longer* control
+    word must not be truncated into an operator plus a stray identifier,
+    because that is a different statement from the one the user wrote.  The
+    relation row is a relation rather than an expression: a relation
+    operator is split off before the expression grammar runs.
     """
     result = expand_latex_macros(expr)
     result = result.replace('**', '^')
@@ -291,12 +391,17 @@ def normalize_implicit_multiplication_expression(expr: str) -> str:
 # identifier must *start* with a letter (``k_rate``, ``A_1``, ``Nat.succ``).
 # Allowing a leading ``_`` let the digit-grouping form ``1_000`` tokenize as
 # ``1`` + ``_000`` and reach Lean as the different statement ``1 * _000``.
+#
+# The multi-character operators must be listed *before* the single-character
+# operator class: the regex is an ordered alternation, so ``<=`` after
+# ``[+\-*/^=!<>]`` was dead code and ``<=`` tokenized as ``<`` followed by
+# ``=`` (two tokens where the vocabulary says one).
 _TOKEN_PATTERN = (
     '\n        \\d+                  # integers\n'
     '        | [a-zA-Z]\\w*(?:\\.[a-zA-Z]\\w*)*   # variables/identifiers (dotted like Nat.succ)\n'
+    '        | <=|>=|!=            # multi-char operators (before the single-char class)\n'
     '        | [+\\-*/^=!<>]       # operators\n'
     '        | \\(|\\)              # parentheses\n'
-    '        | <=|>=|!=           # multi-char operators\n'
 )
 _TOKEN_RE = re.compile(_TOKEN_PATTERN, re.VERBOSE)
 

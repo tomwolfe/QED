@@ -2156,12 +2156,16 @@ def test_underscored_names_survive_full_parse() -> None:
 
 def test_latex_relation_macros_are_not_split_into_letters() -> None:
     """'a \\le b' used to tokenize as ['a', 'l', '*', 'e', 'b'] because the
-    letter-pair rule ran before macro expansion."""
-    assert tokenize('a \\le b') == ['a', '<', '=', 'b']
-    assert tokenize('a \\ge b') == ['a', '>', '=', 'b']
-    assert tokenize('a \\leq b') == ['a', '<', '=', 'b']
-    assert tokenize('a \\geq b') == ['a', '>', '=', 'b']
-    assert tokenize('a \\neq b') == ['a', '!', '=', 'b']
+    letter-pair rule ran before macro expansion.
+
+    The relation is now ONE token ('<='), not two ('<', '='): the
+    multi-character branch of the token pattern used to sit after the
+    single-character operator class, so it was dead code."""
+    assert tokenize('a \\le b') == ['a', '<=', 'b']
+    assert tokenize('a \\ge b') == ['a', '>=', 'b']
+    assert tokenize('a \\leq b') == ['a', '<=', 'b']
+    assert tokenize('a \\geq b') == ['a', '>=', 'b']
+    assert tokenize('a \\neq b') == ['a', '!=', 'b']
 
 
 def test_latex_operator_macros_expand() -> None:
@@ -2172,7 +2176,8 @@ def test_latex_operator_macros_expand() -> None:
 
 def test_latex_frac_expands_to_division() -> None:
     """'\\frac{a}{b}' used to tokenize as the variable 'frac'."""
-    assert tokenize('\\frac{a}{b} = c') == ['(', 'a', ')', '/', '(', 'b', ')', '=', 'c']
+    assert tokenize('\\frac{a}{b} = c') == [
+        '(', '(', 'a', ')', '/', '(', 'b', ')', ')', '=', 'c']
     eq, free_vars = parse_equation('\\frac{a}{b} = c')
     assert eq is not None
     assert canonical_form(eq) == '((a / b)=c)'
@@ -2388,9 +2393,9 @@ def test_unicode_operators_are_recognized() -> None:
     assert tokenize('a × b = c') == ['a', '*', 'b', '=', 'c']
     assert tokenize('a ÷ b = c') == ['a', '/', 'b', '=', 'c']
     assert tokenize('1 − 1 = 0') == ['1', '-', '1', '=', '0']
-    assert tokenize('a ≤ b') == ['a', '<', '=', 'b']
-    assert tokenize('a ≥ b') == ['a', '>', '=', 'b']
-    assert tokenize('a ≠ b') == ['a', '!', '=', 'b']
+    assert tokenize('a ≤ b') == ['a', '<=', 'b']
+    assert tokenize('a ≥ b') == ['a', '>=', 'b']
+    assert tokenize('a ≠ b') == ['a', '!=', 'b']
 
 
 def test_unicode_operators_reach_the_parsed_statement() -> None:
@@ -2433,6 +2438,324 @@ def test_empty_and_whitespace_input_yields_no_tokens() -> None:
     assert tokenize('   ') == []
     assert tokenize('()') == ['(', ')']
     assert statement_kind('') == 'other'
+
+
+# ---------------------------------------------------------------------------
+# qed-02-parser-hardening, part 2: the tokenizer/macro layer.
+#
+# The five defects above are fixed; these tests pin the *residue* that was
+# still letting a different statement reach Lean, plus the implicit
+# multiplication and nested-parenthesis patterns the mission asks for:
+#
+#   7. control words   - ``\cdotp`` was truncated to ``*p``: the tail of a
+#                        longer control word leaked in as an identifier, so
+#                        ``a \cdotp b`` reached Lean as ``a * p * b``.
+#   8. braced scripts  - ``a^{2}`` / ``x_{1}`` (the standard LaTeX spelling
+#                        of a power and a subscript) were rejected outright.
+#   9. multi-char ops  - the ``<=``/``>=``/``!=`` branch of the token
+#                        pattern sat AFTER the single-character operator
+#                        class, so it was dead code.
+#  10. macro coverage  - ``\lt``/``\gt``/``\dfrac``/``\tfrac`` are common
+#                        spellings that were not expanded at all.
+#
+# All of these are compiler-free, so they survive a clean room without
+# Mathlib.
+# ---------------------------------------------------------------------------
+
+
+# --- 7. a control word ends at the first non-letter ---
+
+def test_longer_control_words_are_not_truncated_into_an_operator_and_a_name() -> None:
+    """``a \\cdotp b`` used to expand to ``a *p b`` and tokenize as
+    ['a', '*', 'p', 'b'] -- the statement Lean saw was ``a * p * b``.
+
+    A LaTeX control word ends at the first non-letter, so ``\\cdotp`` is
+    NOT ``\\cdot`` followed by ``p``.  The tail must not leak into the
+    statement: the whole control word is unknown, so the input is rejected.
+    """
+    for expr in ['a \\cdotp b', 'a \\divide b', 'a \\neqq b', 'a \\leX b',
+                 'a \\geqx b', 'a \\timesp b', 'a \\divx b']:
+        assert tokenize(expr) == [], expr
+        eq, _ = parse_equation(expr)
+        assert eq is None, expr
+        assert statement_kind(expr) == 'other', expr
+
+
+def test_control_word_boundary_does_not_break_the_supported_macros() -> None:
+    """The boundary must not swallow the macros that ARE supported: the
+    non-letter after a control word may be a space, a parenthesis or an
+    operator."""
+    assert tokenize('a \\cdot b = c') == ['a', '*', 'b', '=', 'c']
+    assert tokenize('a \\cdot(b) = c') == ['a', '*', '(', 'b', ')', '=', 'c']
+    assert tokenize('a \\le b') == ['a', '<=', 'b']
+    assert tokenize('a \\leq b') == ['a', '<=', 'b']
+    assert tokenize('a \\left(b\\right) = c') == ['a', '(', 'b', ')', '=', 'c']
+    assert tokenize('\\frac{a}{b} = c') == [
+        '(', '(', 'a', ')', '/', '(', 'b', ')', ')', '=', 'c']
+
+
+# --- 8. braced powers and subscripts ---
+
+def test_braced_power_expands_to_a_parenthesized_power() -> None:
+    """``a^{2}`` is the standard LaTeX spelling of a power.  The braces
+    become real parentheses, so the grouping the power denotes survives."""
+    assert tokenize('a^{2}') == ['a', '^', '(', '2', ')']
+    eq, _ = parse_equation('a^{2} = b')
+    assert eq is not None
+    assert canonical_form(eq) == '((a ^ 2)=b)'
+
+
+def test_braced_power_keeps_the_grouping_of_its_exponent() -> None:
+    """``a^{b+c}`` is ``a^(b+c)``, not ``(a^b)+c``."""
+    eq, _ = parse_equation('a^{b+c} = d')
+    assert eq is not None
+    assert canonical_form(eq) == '((a ^ (b + c))=d)'
+
+
+def test_braced_power_of_a_negative_exponent() -> None:
+    eq, _ = parse_equation('e^{-x} = 1')
+    assert eq is not None
+    assert canonical_form(eq) == '((e ^ (-x))=1)'
+
+
+def test_braced_subscript_expands_to_a_name() -> None:
+    """``x_{1}`` is the LaTeX spelling of a subscripted name."""
+    assert tokenize('x_{1}') == ['x_1']
+    eq, free_vars = parse_equation('x_{1} = 4')
+    assert eq is not None
+    assert canonical_form(eq) == '(x_1=4)'
+    assert free_vars == ['x_1']
+
+
+def test_ambiguous_braced_subscripts_fail_closed() -> None:
+    """A subscript that is not a name tail, or that is followed by more
+    name characters, must be REJECTED rather than merged into one name:
+    ``a_{i,j}`` must not become ``a_i * j`` and ``a_{i}j`` must not become
+    the single name ``a_ij``."""
+    for expr in ['a_{i,j} = 1', 'a_{i-1} = 1', 'a_{i}j = 1', 'A_{1}ab = 1']:
+        assert tokenize(expr) == [], expr
+        eq, _ = parse_equation(expr)
+        assert eq is None, expr
+
+
+def test_braced_frac_and_script_nest() -> None:
+    """``\\frac{a_{1}}{b}`` and ``a^{\\frac{b}{c}}`` need both rewrites to
+    run before either can succeed."""
+    assert tokenize('\\frac{a_{1}}{b}') == [
+        '(', '(', 'a_1', ')', '/', '(', 'b', ')', ')']
+    assert tokenize('a^{\\frac{b}{c}}') == [
+        'a', '^', '(', '(', '(', 'b', ')', '/', '(', 'c', ')', ')', ')']
+
+
+def test_a_fraction_is_one_operand() -> None:
+    """``\\frac{a}{b}^2`` is ``(a/b)^2``, not ``a/(b^2)``.
+
+    The fraction used to expand to ``(a) / (b)``, so a power attached to it
+    landed on the *denominator* -- a different statement from the one that
+    was written.  The whole fraction is one operand now."""
+    from parser import canonical_form as cf
+    for raw in ['\\frac{a}{b}^2', '\\frac{a}{b}^{2}']:
+        node, _ = parse_expression(
+            normalize_implicit_multiplication(tokenize(raw)))
+        assert node is not None, raw
+        assert cf(node) == '((a / b) ^ 2)', raw
+    node, _ = parse_expression(
+        normalize_implicit_multiplication(tokenize('\\frac{a}{b}x')))
+    assert node is not None
+    assert cf(node) == '((a / b) * x)'
+
+
+# --- 9. the multi-character operators are one token ---
+
+def test_multi_character_operators_are_single_tokens() -> None:
+    """The token pattern is an ordered alternation: the multi-character
+    branch used to sit after the single-character operator class, so it
+    never matched and ``<=`` tokenized as ``<`` followed by ``=``."""
+    assert tokenize('a <= b') == ['a', '<=', 'b']
+    assert tokenize('a >= b') == ['a', '>=', 'b']
+    assert tokenize('a != b') == ['a', '!=', 'b']
+    # The single-character operators are unaffected.
+    assert tokenize('a < b') == ['a', '<', 'b']
+    assert tokenize('a > b') == ['a', '>', 'b']
+    assert tokenize('a = b') == ['a', '=', 'b']
+
+
+def test_multi_character_operators_still_reach_the_relation() -> None:
+    """Making the branch live must not change what the statement means."""
+    for expr, cls in [('a <= b', Le), ('a >= b', Ge), ('a != b', Ne)]:
+        eq, free_vars = parse_equation(expr)
+        assert eq is not None, expr
+        assert isinstance(eq, cls), expr
+        assert free_vars == ['a', 'b'], expr
+        assert statement_kind(expr) == 'inequality', expr
+
+
+# --- 10. the remaining common macro spellings ---
+
+def test_additional_relation_macros_expand() -> None:
+    assert tokenize('a \\lt b') == ['a', '<=', 'b']
+    assert tokenize('a \\gt b') == ['a', '>=', 'b']
+    eq, _ = parse_equation('a \\lt b')
+    assert eq is not None and isinstance(eq, Le)
+    eq, _ = parse_equation('a \\gt b')
+    assert eq is not None and isinstance(eq, Ge)
+
+
+def test_display_and_text_fractions_expand() -> None:
+    """``\\dfrac``/``\\tfrac`` are the display/text spellings of ``\\frac``."""
+    for expr in ['\\dfrac{a}{b} = c', '\\tfrac{a}{b} = c']:
+        assert tokenize(expr) == [
+            '(', '(', 'a', ')', '/', '(', 'b', ')', ')', '=', 'c'], expr
+        eq, free_vars = parse_equation(expr)
+        assert eq is not None, expr
+        assert canonical_form(eq) == '((a / b)=c)', expr
+
+
+def test_unknown_math_macros_still_fail_closed() -> None:
+    """Adding macros must not open the door to the identifiers behind
+    them: the ones that are still unknown stay unknown."""
+    for expr in ['a \\pm b = c', 'a \\mp b = c', 'a \\sqrt{2} = b',
+                 '\\alpha + \\beta = 1', 'a \\approx b', 'a \\cdotp b = c']:
+        assert tokenize(expr) == [], expr
+        eq, _ = parse_equation(expr)
+        assert eq is None, expr
+
+
+# --- the mission's own subject: implicit multiplication and nested parens ---
+
+def test_implicit_multiplication_patterns() -> None:
+    """Every implicit-product shape the MVP input language allows, from the
+    raw text to the AST."""
+    from parser import (normalize_implicit_multiplication_expression as n,
+                         canonical_form as cf)
+    cases = [
+        ('2a', '2 * a', '(2 * a)'),
+        ('2ab', '2 * a * b', '((2 * a) * b)'),
+        ('3xyz', '3 * x * y * z', '(((3 * x) * y) * z)'),
+        ('ab', 'a * b', '(a * b)'),
+        ('a2', 'a * 2', '(a * 2)'),
+        ('(a+b)2', '(a+b) * 2', '((a + b) * 2)'),
+        ('(a+b)(c+d)', '(a+b) * (c+d)', '((a + b) * (c + d))'),
+        ('2(a+b)', '2 * (a+b)', '(2 * (a + b))'),
+        ('a(b+c)', 'a * (b+c)', '(a * (b + c))'),
+    ]
+    for raw, normalized, ast in cases:
+        assert n(raw) == normalized, raw
+        tokens = normalize_implicit_multiplication(tokenize(raw))
+        node, pos = parse_expression(tokens)
+        assert node is not None, raw
+        assert pos == len(tokens), raw
+        assert cf(node) == ast, raw
+
+
+def test_implicit_multiplication_never_splits_a_name() -> None:
+    """The word-boundary rules are what keep a multi-character name a
+    single name."""
+    from parser import normalize_implicit_multiplication_expression as n
+    for name in ['ka_rate', 'A_1ab', 'a1b', 'Nat2', 'x_1', 'k_rate',
+                 'Nat.succ', 'Vmax', 'Km']:
+        assert n(name) == name, name
+    eq, free_vars = parse_equation('ka_rate * Ag = 1')
+    assert eq is not None
+    assert free_vars == ['Ag', 'ka_rate']
+
+
+def test_nested_parentheses_are_grouped_not_flattened() -> None:
+    """Nesting is preserved: ``((a + b))`` is the same term as ``(a + b)``,
+    and the grouping is what distinguishes it from ``a + b``."""
+    from parser import canonical_form as cf
+    node, pos = parse_expression(
+        normalize_implicit_multiplication(tokenize('((a + b))')))
+    assert node is not None
+    assert cf(node) == '(a + b)'
+    node, pos = parse_expression(
+        normalize_implicit_multiplication(tokenize('(a + (b * (c - d)))')))
+    assert node is not None
+    assert cf(node) == '(a + (b * (c - d)))'
+
+
+def test_nested_parentheses_multiply_as_a_group() -> None:
+    """A parenthesized group is one operand: ``(a+b)(c+d)`` is a product of
+    two sums, not a sum of products."""
+    from parser import canonical_form as cf
+    node, pos = parse_expression(
+        normalize_implicit_multiplication(tokenize('((a+b))(c+d)')))
+    assert node is not None
+    assert cf(node) == '((a + b) * (c + d))'
+    node, pos = parse_expression(
+        normalize_implicit_multiplication(tokenize('2((a+b))')))
+    assert node is not None
+    assert cf(node) == '(2 * (a + b))'
+
+
+def test_implicit_multiplication_chains_through_several_groups() -> None:
+    """The two rules meet on the shapes the mission names: a group is ONE
+    operand and the adjacency between two operands is a product.
+
+    Three adjacent groups, a group next to a name, a literal next to a group
+    and a signed literal next to a group are all the same rule applied
+    repeatedly, and each one is a different product.
+    """
+    from parser import canonical_form as cf
+    cases = [
+        ('(a+b)(c+d)(e+f)', '(((a + b) * (c + d)) * (e + f))'),
+        ('2(a+b)(c+d)', '((2 * (a + b)) * (c + d))'),
+        ('(a+b)(c+d)e', '(((a + b) * (c + d)) * e)'),
+        ('2(a+b)c(d)', '(((2 * (a + b)) * c) * d)'),
+        ('-2(a+b)', '((-2) * (a + b))'),
+    ]
+    for raw, expected in cases:
+        tokens = normalize_implicit_multiplication(tokenize(raw))
+        node, pos = parse_expression(tokens)
+        assert node is not None, raw
+        assert pos == len(tokens), raw
+        assert cf(node) == expected, raw
+
+
+def test_unbalanced_parentheses_fail_closed() -> None:
+    """Every unbalanced shape is rejected; none of them may reach Lean."""
+    for expr in ['(a', 'a)', '((a)', '(a))', '(()', '())', '(a + (b)',
+                 '(a + b)) = 1', '((a+b) = 1', 'a = (b', '(()) = 1']:
+        eq, _ = parse_equation(expr)
+        assert eq is None, expr
+        assert statement_kind(expr) == 'other', expr
+
+
+# --- the adjacency rules that the token-level normalizer still has to make ---
+
+def test_negative_number_followed_by_a_variable_is_a_product() -> None:
+    """'-2x' is the product of -2 and x.  The adjacency rule for a signed
+    literal is a separate branch of the normalizer, so it is pinned here
+    rather than left to the digit branch alone."""
+    from parser import canonical_form as cf
+    tokens = normalize_implicit_multiplication(tokenize('-2x'))
+    assert tokens == ['-', '2', '*', 'x']
+    node, pos = parse_expression(tokens)
+    assert node is not None
+    assert pos == len(tokens)
+    assert cf(node) == '((-2) * x)'
+
+
+def test_parse_ode_of_nothing_is_not_an_ode() -> None:
+    """A missing expression is not an ODE; the parser says so with the
+    documented (None, None) pair rather than with a half-built node."""
+    assert parse_ode(None) == (None, None)
+
+
+def test_nonneg_product_rejects_a_non_product_lhs() -> None:
+    """'x >= 0' is a non-negativity claim about a single term, not about a
+    product, so the detector answers False."""
+    from parser import is_nonneg_product
+    node, _ = parse_equation('x >= 0')
+    assert node is not None
+    assert is_nonneg_product(node) is False
+
+
+def test_flow_gradient_detector_answers_false_on_a_malformed_node() -> None:
+    """A detector must answer False, never None, when it meets a node it
+    cannot read: a half-built child must not turn into a truthy answer."""
+    from parser import has_flow_gradient_structure
+    assert has_flow_gradient_structure(BinOp(Var('a'), '*', None)) is False
 
 
 # ---------------------------------------------------------------------------

@@ -49,7 +49,11 @@ A CLI-based agentic pipeline that converts constrained mathematical statements (
    - Supports nested parentheses via recursive descent
    - Normalizes implicit multiplication: "2ab" -> "2 * a * b", "3xyz" -> "3 * x * y * z"
    - Handles paren-adjacent multiplication: "(a+b)2", "2(a+b)", "(a+b)(c+d)"
-   - Supports LaTeX-like tokens: \cdot, \le, \ge, \neq
+   - Keeps multi-character names intact: "ka_rate", "A_1ab", "Nat.succ" are one name
+   - Supports LaTeX-like tokens: \cdot, \times, \div, \le, \leq, \lt, \ge, \geq, \gt,
+     \neq, \ne, \frac, \dfrac, \tfrac, \left/\right, braced powers/subscripts ("a^{2}", "x_{1}")
+   - Fails closed on anything outside that vocabulary: a stray character, an unknown macro
+     ("\pm", "\alpha") or a malformed parenthesis is rejected, never approximated
    - Handles dotted identifiers like `Nat.succ`
    - Identifies free variables in expressions
    - Produces intermediate AST representation
@@ -169,6 +173,10 @@ AND compiler output contains no "sorryAx"
 ### Known Limitations
 - Requires Mathlib4 for some tactics (ring, linarith, omega)
 - Limited to constrained arithmetic expressions (not arbitrary LaTeX)
+- The parser accepts the LaTeX-like vocabulary above, but the Lean code generator
+  interpolates the statement *as written*: a statement that uses LaTeX-only
+  syntax (`\le`, `\frac`, `a^{2}`) parses, and is then rejected by the Lean
+  compiler. Write the statement in Lean-compatible syntax to have it proved.
 - Type inference is heuristic-based, not full typeclass synthesis
 - Lean 4 toolchain must be available via elan
 - Complex proofs requiring deep tactic sequences may need manual intervention
@@ -178,7 +186,10 @@ The following Tether missions were executed to harden the pipeline:
 
 1. **qed-unit-tests-pass**: Verified all unit tests pass and pipeline handles missing Lean gracefully
 2. **qed-01-no-sorry-gate**: Hardened sorry detection with comprehensive patterns and fail-closed axiom verification
-3. **qed-02-parser-hardening**: Improved parser to handle dotted identifiers and unary negation before parentheses
+3. **qed-02-parser-hardening**: Hardened the parser: dotted identifiers, unary negation before
+   parentheses, word-boundary rules that keep multi-character names intact, LaTeX macro expansion
+   (control words end at the first non-letter, so a longer control word can never leak its tail
+   into the statement), braced powers/subscripts, and a fail-closed tokenizer
 4. **qed-03-type-inference**: Verified type inference and proper type annotations
 5. **qed-04-tactic-policy**: Refactored tactic selection to use AST-based classification
 6. **qed-05-integration-validation**: End-to-end verification with real Lean 4 compiler (v4.0.0) - all 18 end-to-end tests pass
