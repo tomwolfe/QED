@@ -2690,3 +2690,334 @@ def test_generate_lean_code_handles_rat_division(monkeypatch) -> None:
     code = p.generate_lean_code("3/4 = 3/4", [])
     assert code.startswith("theorem qed_goal : ")
     assert "3/4" in code
+
+
+# ---------------------------------------------------------------------------
+# qed-01-no-sorry-gate: the gate must FAIL CLOSED.
+#
+# The gate had three ways to wave a proof through:
+#
+#   1. The compiler's EXIT CODE is not a gate. Lean prints
+#        warning: declaration uses `sorry`
+#      and still exits 0, so a sorry proof is a "successful" compile. Only
+#      the source/warning/axiom checks can catch it.
+#
+#   2. The specific compiler-output detectors were DEAD CODE. Lean
+#      backtick-quotes the token ("uses `sorry`"), so a detector written for
+#      the bare "uses sorry" form matched nothing and only the generic
+#      catch-all could fire -- the precise reasons the detectors existed to
+#      produce were unreachable.
+#
+#   3. The axioms check was FAIL-OPEN. It never looked at the compiler's
+#      exit code and never required the axioms report to exist, so:
+#        - a file with a syntax error came back "clean";
+#        - a file whose theorem was not named `qed_goal` came back "clean",
+#          because `#print axioms qed_goal` errored out and there was
+#          nothing left to grep.
+#      Absence of evidence was being read as evidence of innocence, which is
+#      the one thing a no-sorry gate must never do.
+#
+# The tests below pin the three fixes, and drive the tactic loop end to end
+# so that a sorry-bearing output is shown to return FAILURE, not success.
+
+
+class _FakeLeanResult:
+    """Stand-in for the object ``subprocess.run`` returns."""
+
+    def __init__(self, returncode: int = 0, stdout: str = "", stderr: str = ""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def _lean_path_in(cmd) -> str:
+    """The .lean file a Lean command line refers to, if any."""
+    for part in (cmd if isinstance(cmd, list) else []):
+        if str(part).endswith(".lean"):
+            return str(part)
+    return ""
+
+
+def _read_lean(path: str) -> str:
+    try:
+        with open(path) as fh:
+            return fh.read()
+    except OSError:
+        return ""
+
+
+def _fake_lean_run(compile_returncode: int = 0, compile_output: str = "",
+                   axioms_report: str | None = None):
+    """Build a ``subprocess.run`` stand-in that behaves like Lean.
+
+    The axioms check re-compiles the file with ``#print axioms <name>``
+    appended, so the stand-in has to answer that request differently from an
+    ordinary compile -- otherwise the fake is indistinguishable from a
+    compiler that says nothing at all, and the gate's behaviour under test
+    would be untestable.
+    """
+    def _run(cmd, **kwargs):
+        text = _read_lean(_lean_path_in(cmd))
+        if "#print axioms" in text:
+            report = (
+                axioms_report
+                if axioms_report is not None
+                else "'qed_goal' does not depend on any axioms"
+            )
+            return _FakeLeanResult(0, report, "")
+        return _FakeLeanResult(compile_returncode, compile_output, "")
+    return _run
+
+
+# --- 1. the compiler's exit code is NOT the gate ---
+
+def test_check_for_sorry_catches_the_message_lean_actually_prints() -> None:
+    """Lean 4.33 prints ``warning: declaration uses `sorry``` -- the token is
+    backtick-quoted, so a detector written for the bare "uses sorry" form
+    matches nothing."""
+    from agentic_pipeline import LeanAgenticPipeline
+    p = LeanAgenticPipeline()
+    has_sorry, reason = p.check_for_sorry(
+        "theorem qed_goal : 1 = 1 := by\n  rfl",
+        "warning: declaration uses `sorry`",
+    )
+    assert has_sorry is True
+    # The SPECIFIC detector must fire, not merely the generic catch-all.
+    assert "declaration uses sorry" in reason.lower(), reason
+
+
+def test_check_for_sorry_specific_warning_detector_is_live() -> None:
+    """The `warning: ... uses sorry` detector must reach its own reason."""
+    from agentic_pipeline import LeanAgenticPipeline
+    p = LeanAgenticPipeline()
+    has_sorry, reason = p.check_for_sorry(
+        "theorem qed_goal : 1 = 1 := by\n  rfl",
+        "warning: declaration 'qed_goal' uses `sorry`",
+    )
+    assert has_sorry is True
+    assert "warning" in reason.lower(), reason
+
+
+def test_tactic_loop_rejects_a_sorry_proof_even_when_the_compiler_exits_zero(
+    monkeypatch,
+) -> None:
+    """A proof Lean accepted only because it contained a `sorry` must never
+    be reported as verified -- even though Lean exited 0."""
+    import subprocess as _sp
+    from agentic_pipeline import LeanAgenticPipeline
+
+    monkeypatch.setattr(
+        _sp, "run",
+        _fake_lean_run(
+            compile_returncode=0,
+            compile_output="warning: declaration uses `sorry`",
+        ),
+    )
+    p = LeanAgenticPipeline(use_mathlib=False, lean_path="lean")
+    res = p.execute_tactic_loop("0 = 0")
+    assert res["success"] is False
+    assert res["attempts"], "the attempts must be recorded"
+    assert all(a["has_sorry"] for a in res["attempts"]), res["attempts"]
+    assert all("sorry" in a["sorry_reason"].lower() for a in res["attempts"])
+
+
+def test_tactic_loop_accepts_a_clean_proof_under_the_same_mock(monkeypatch) -> None:
+    """The control for the test above: the same mock, without the sorry
+    warning, must still succeed. Without this the rejection test could pass
+    for the wrong reason."""
+    import subprocess as _sp
+    from agentic_pipeline import LeanAgenticPipeline
+
+    monkeypatch.setattr(_sp, "run", _fake_lean_run())
+    p = LeanAgenticPipeline(use_mathlib=False, lean_path="lean")
+    res = p.execute_tactic_loop("0 = 0")
+    assert res["success"] is True
+    assert res["verification"]["axioms_check"] == "passed"
+    assert "sorry" not in res["lean_code"]
+
+
+# --- 2. the axioms check must fail closed ---
+
+def test_verify_no_sorry_axioms_fails_closed_when_the_file_does_not_compile() -> None:
+    """A file the compiler rejected tells us NOTHING about its axiom set, so
+    it must not be certified clean. The old check never read the exit code
+    and returned "clean" for a file with a syntax error."""
+    import os
+    import tempfile
+    from agentic_pipeline import LeanAgenticPipeline
+    p = LeanAgenticPipeline()
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".lean", delete=False) as f:
+        f.write("theorem broken : : : := by\n")
+        path = f.name
+    try:
+        is_clean, reason = p._verify_no_sorry_axioms(path)
+        assert is_clean is False
+        assert "fail-closed" in reason.lower() or "error" in reason.lower()
+    finally:
+        os.unlink(path)
+
+
+def test_verify_no_sorry_axioms_fails_closed_when_no_report_is_produced() -> None:
+    """No theorem means no axiom set to check: absence of evidence is not
+    evidence of innocence."""
+    import os
+    import tempfile
+    from agentic_pipeline import LeanAgenticPipeline
+    p = LeanAgenticPipeline()
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".lean", delete=False) as f:
+        f.write("def helper := 1\n")
+        path = f.name
+    try:
+        is_clean, reason = p._verify_no_sorry_axioms(path)
+        assert is_clean is False
+        assert "fail-closed" in reason.lower() or "error" in reason.lower()
+    finally:
+        os.unlink(path)
+
+
+def test_verify_no_sorry_axioms_rejects_sorryax_in_the_axiom_list() -> None:
+    """The verdict must come from the axioms REPORT, not from grepping the
+    compiler output for the word 'sorry'."""
+    import os
+    import tempfile
+    from agentic_pipeline import LeanAgenticPipeline
+    p = LeanAgenticPipeline()
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".lean", delete=False) as f:
+        f.write("theorem qed_goal : 1 = 1 := by\n  sorry\n")
+        path = f.name
+    try:
+        is_clean, reason = p._verify_no_sorry_axioms(path)
+        assert is_clean is False
+        assert "sorry" in reason.lower()
+    finally:
+        os.unlink(path)
+
+
+def test_verify_no_sorry_axioms_binds_the_report_to_the_declared_theorem() -> None:
+    """The report is asked for the theorem the file actually declares, so a
+    sorry under a different name is still caught."""
+    import os
+    import tempfile
+    from agentic_pipeline import LeanAgenticPipeline
+    p = LeanAgenticPipeline()
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".lean", delete=False) as f:
+        f.write("theorem my_lemma : 1 = 1 := by\n  sorry\n")
+        path = f.name
+    try:
+        is_clean, reason = p._verify_no_sorry_axioms(path)
+        assert is_clean is False
+        assert "sorry" in reason.lower()
+    finally:
+        os.unlink(path)
+
+
+def test_verify_no_sorry_axioms_accepts_a_clean_declaration() -> None:
+    """The control for the fail-closed tests: a clean declaration is clean.
+    (Tolerant of a missing Lean, like the pre-existing sibling test.)"""
+    import os
+    import tempfile
+    from agentic_pipeline import LeanAgenticPipeline
+    p = LeanAgenticPipeline()
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".lean", delete=False) as f:
+        f.write("theorem my_lemma : 1 = 1 := by\n  rfl\n")
+        path = f.name
+    try:
+        is_clean, reason = p._verify_no_sorry_axioms(path)
+        assert is_clean is True or "fail-closed" in reason.lower() or "error" in reason.lower()
+    finally:
+        os.unlink(path)
+
+
+# --- 3. the gate is evaluated on the FILE, not only on the compiled string ---
+
+def test_tactic_loop_rejects_a_proof_whose_file_on_disk_carries_a_sorry(
+    monkeypatch,
+) -> None:
+    """The artefact on disk is what a reviewer re-checks and re-compiles, so
+    the gate has to be evaluated on the file -- not only on the string that
+    was handed to the compiler."""
+    import subprocess as _sp
+    from agentic_pipeline import LeanAgenticPipeline
+
+    def _run(cmd, **kwargs):
+        path = _lean_path_in(cmd)
+        text = _read_lean(path)
+        if "#print axioms" in text:
+            return _FakeLeanResult(
+                0, "'qed_goal' does not depend on any axioms", ""
+            )
+        # Whatever was compiled, the artefact on disk now carries a sorry.
+        with open(path, "w") as fh:
+            fh.write("theorem qed_goal : 1 = 1 := by\n  sorry\n")
+        return _FakeLeanResult(0, "", "")
+
+    monkeypatch.setattr(_sp, "run", _run)
+    p = LeanAgenticPipeline(use_mathlib=False, lean_path="lean")
+    res = p.execute_tactic_loop("0 = 0")
+    assert res["success"] is False
+    assert res["attempts"]
+    assert all(a["has_sorry"] for a in res["attempts"]), res["attempts"]
+    assert all("re-read" in a["sorry_reason"] for a in res["attempts"])
+
+
+def test_source_on_disk_is_clean_fails_closed_when_the_file_cannot_be_read() -> None:
+    """A file that cannot be read is not a file that has been shown to be
+    sorry-free."""
+    from agentic_pipeline import LeanAgenticPipeline
+    p = LeanAgenticPipeline(use_mathlib=False, lean_path="lean")
+    is_clean, reason = p._source_on_disk_is_clean("/nonexistent/path.lean")
+    assert is_clean is False
+    assert "fail-closed" in reason.lower() or "error" in reason.lower()
+
+
+# --- 4. the agentic repair path carries the same gate ---
+
+def test_adapter_repair_rejects_a_sorry_proof(monkeypatch) -> None:
+    """The adapter path is a second way to reach success, so it has to carry
+    the same no-sorry gate as the static path."""
+    import subprocess as _sp
+    from agentic_pipeline import LeanAgenticPipeline
+
+    class _FakeState:
+        logs = "```lean\nring\n```"
+
+    class _FakeAdapter:
+        def __init__(self):
+            self.prompts: list[str] = []
+
+        def send(self, prompt, session):
+            self.prompts.append(prompt)
+            return _FakeState()
+
+    def _run(cmd, **kwargs):
+        text = _read_lean(_lean_path_in(cmd))
+        if "#print axioms" in text:
+            return _FakeLeanResult(
+                0, "'qed_goal' does not depend on any axioms", ""
+            )
+        if "ring" in text:
+            # The adapter's tactic compiles, but Lean warns that the proof
+            # it accepted still uses `sorry`.
+            return _FakeLeanResult(0, "warning: declaration uses `sorry`", "")
+        return _FakeLeanResult(1, "", "error: unsolved goals\n⊢ 0 = 0\n")
+
+    monkeypatch.setattr(_sp, "run", _run)
+    adapter = _FakeAdapter()
+    p = LeanAgenticPipeline(use_mathlib=False, lean_path="lean", adapter=adapter)
+    res = p.execute_tactic_loop("0 = 0", max_iterations=3)
+    assert res["success"] is False
+    assert adapter.prompts, "the adapter must have been consulted"
+    adapter_attempts = [
+        a for a in res["attempts"] if "[adapter]" in a.get("tactic", "")
+    ]
+    assert adapter_attempts, res["attempts"]
+    assert all(a["has_sorry"] for a in adapter_attempts), adapter_attempts
+
+
+def test_execute_with_initial_code_never_echoes_a_sorry_artifact() -> None:
+    """A sorry-bearing artefact must never be handed back as a result."""
+    from agentic_pipeline import LeanAgenticPipeline
+    p = LeanAgenticPipeline(use_mathlib=False, lean_path="lean")
+    res = p._execute_with_initial_code("theorem qed_goal : 1 = 1\n  sorry\n")
+    assert res["success"] is False
+    assert "sorry" not in res.get("lean_code", "")

@@ -339,12 +339,23 @@ class LeanAgenticPipeline:
         if re.search(r'\bsorryAx\b', compiler_output):
             return True, "Compiler output mentions 'sorryAx'"
         
-        # Check for Lean 4 warning patterns indicating sorry usage
-        if re.search(r'declaration uses sorry', compiler_output):
+        # Check for Lean 4 warning patterns indicating sorry usage.
+        #
+        # Lean 4.33 reports a sorry proof as
+        #     warning: declaration uses `sorry`
+        # -- the token is BACKTICK-quoted, so the literal substring
+        # "uses sorry" never appears and a detector written for the bare
+        # form matches nothing. Those detectors were therefore dead code:
+        # only the generic catch-all below could ever fire, and the precise
+        # reasons they were written to produce were unreachable.
+        #
+        # Match the quoted AND the bare form so the specific detectors are
+        # live again; the generic catch-all stays as the backstop.
+        if re.search(r'declaration uses\s+[`\'"]?sorry\b', compiler_output):
             return True, "Compiler output indicates declaration uses sorry"
-        if re.search(r'warning:.*uses sorry', compiler_output):
+        if re.search(r'warning:.*uses\s+[`\'"]?sorry\b', compiler_output):
             return True, "Compiler output warning indicates sorry usage"
-        if re.search(r'uses sorryAx', compiler_output):
+        if re.search(r'uses\s+sorryAx\b', compiler_output):
             return True, "Compiler output indicates uses sorryAx"
         
         if re.search(r'\bsorry\b', compiler_output):
@@ -352,11 +363,45 @@ class LeanAgenticPipeline:
         
         return False, ""
     
+    # The name the pipeline gives the theorem it proves. The axioms report is
+    # bound to the declaration that was actually checked, so this is the
+    # preferred target; a file that names its theorem differently is checked
+    # against its own declaration instead.
+    GOAL_THEOREM_NAME = "qed_goal"
+
+    @staticmethod
+    def _declared_theorem_names(lean_source: str) -> List[str]:
+        """Names of the theorems/lemmas declared in *lean_source*.
+
+        Used to bind the axioms check to the declaration that is really in
+        the file, instead of assuming a fixed name. Attributes and the
+        standard modifiers are tolerated so that a decorated declaration is
+        still recognised.
+        """
+        return re.findall(
+            r'^[ \t]*(?:@\[[^\]]*\][ \t]*)*'
+            r'(?:(?:private|protected|noncomputable|unsafe|partial)[ \t]+)*'
+            r'(?:theorem|lemma)[ \t]+([A-Za-z_][A-Za-z0-9_\'.]*)',
+            lean_source,
+            re.MULTILINE,
+        )
+
     def _verify_no_sorry_axioms(self, temp_path: str) -> Tuple[bool, str]:
         """
         Verify that a compiled theorem doesn't use sorry axioms.
         
         Runs `#print axioms theorem_name` to check the axiom set.
+        
+        The check FAILS CLOSED. A file that does not compile, or a file whose
+        axioms report is not produced, yields "not clean" -- never "clean".
+        The previous version never looked at the compiler's exit code and
+        never required the report to exist, so it certified files it had
+        not actually inspected: a file with a syntax error came back
+        "clean", and a file whose theorem was not named ``qed_goal`` came
+        back "clean" because ``#print axioms qed_goal`` errored out and
+        nothing was left to grep. Absence of evidence was being read as
+        evidence of innocence, which is the one thing a no-sorry gate must
+        never do.
         
         Args:
             temp_path: Path to the temporary .lean file
@@ -364,12 +409,25 @@ class LeanAgenticPipeline:
         Returns:
             (is_clean, reason) - is_clean is True if no sorry axioms found
         """
+        verify_path = temp_path + ".verify.lean"
         try:
             with open(temp_path, 'r') as f:
                 original_content = f.read()
-            
-            verify_code = original_content + "\n#print axioms qed_goal\n"
-            verify_path = temp_path + ".verify.lean"
+
+            # Bind the report to the declaration that is really in the file.
+            names = self._declared_theorem_names(original_content)
+            if not names:
+                return False, (
+                    "Axiom verification failed (fail-closed): the file "
+                    "declares no theorem, so no axiom set could be checked"
+                )
+            target = (
+                self.GOAL_THEOREM_NAME
+                if self.GOAL_THEOREM_NAME in names
+                else names[0]
+            )
+
+            verify_code = original_content + f"\n#print axioms {target}\n"
             with open(verify_path, 'w') as f:
                 f.write(verify_code)
             
@@ -382,19 +440,53 @@ class LeanAgenticPipeline:
             )
             
             output = result.stdout + result.stderr
-            
-            if re.search(r'\bsorry\b', output):
-                return False, "#print axioms shows sorry"
-            if re.search(r'\bsorryAx\b', output):
-                return False, "#print axioms shows sorryAx"
-            if re.search(r'declaration uses sorry', output):
-                return False, "#print axioms indicates declaration uses sorry"
-            if re.search(r'\bTactic\.sorry\b', output):
-                return False, "#print axioms shows Tactic.sorry"
-            if re.search(r'\bLean\.Elab\.Tactic\.sorry\b', output):
-                return False, "#print axioms shows Lean.Elab.Tactic.sorry"
-            
-            return True, ""
+
+            # A verify file that did not compile tells us NOTHING about the
+            # axiom set, so it cannot be reported as clean.
+            if result.returncode != 0:
+                return False, (
+                    "Axiom verification failed (fail-closed): the axioms "
+                    f"check did not compile (exit {result.returncode})"
+                )
+
+            # The axioms report is the structured evidence we asked for.
+            # Parse it instead of grepping the whole output, so the verdict
+            # is about THIS theorem's axiom set.
+            depends = re.search(
+                r"'%s' depends on axioms:\s*\[([^\]]*)\]" % re.escape(target),
+                output,
+            )
+            if depends:
+                axioms = [
+                    a.strip() for a in depends.group(1).split(',') if a.strip()
+                ]
+                sorry_axioms = [a for a in axioms if re.search(r'\bsorry', a)]
+                if sorry_axioms:
+                    return False, (
+                        "#print axioms shows sorry ("
+                        + ", ".join(sorry_axioms) + ")"
+                    )
+                # Belt and braces: a sorry mention anywhere in the output
+                # (e.g. a warning about a different declaration in the same
+                # file) is a leak, whatever this theorem's axiom list says.
+                if re.search(r'\bsorry\b', output):
+                    return False, "#print axioms shows sorry"
+                return True, ""
+
+            if re.search(
+                r"'%s' does not depend on any axioms" % re.escape(target),
+                output,
+            ):
+                if re.search(r'\bsorry\b', output):
+                    return False, "#print axioms shows sorry"
+                return True, ""
+
+            # No report for the target: the check learned nothing, so it
+            # cannot certify anything.
+            return False, (
+                "Axiom verification failed (fail-closed): no axioms report "
+                f"for '{target}' was produced"
+            )
             
         except Exception as e:
             return False, f"Axiom verification failed (fail-closed): {e}"
@@ -403,6 +495,25 @@ class LeanAgenticPipeline:
                 os.unlink(verify_path)
             except Exception:
                 pass
+
+    def _source_on_disk_is_clean(self, temp_path: str) -> Tuple[bool, str]:
+        """Re-read the compiled file and confirm it still has no sorry.
+
+        The in-memory string that was handed to the compiler is not proof of
+        what is on disk. The file is the artefact a reviewer will re-check
+        and re-compile, so the gate has to be evaluated on the file itself.
+
+        Fails closed: a file that cannot be read is not a file that has been
+        shown to be sorry-free.
+        """
+        try:
+            with open(temp_path, 'r') as f:
+                disk_source = f.read()
+        except Exception as e:
+            return False, (
+                f"Post-compilation source re-read failed (fail-closed): {e}"
+            )
+        return self.check_for_sorry(disk_source, '')
 
     @staticmethod
     def _parse_lean_goal(stderr: str) -> Optional[str]:
@@ -984,17 +1095,16 @@ class LeanAgenticPipeline:
                 
                 # Success if compiled without sorry
                 if result.returncode == 0 and not has_sorry:
-                    # Post-compilation re-read: verify file on disk still has no sorry
-                    try:
-                        with open(temp_path, 'r') as f:
-                            disk_source = f.read()
-                        disk_sorry, disk_reason = self.check_for_sorry(disk_source, '')
-                        if disk_sorry:
-                            attempt['has_sorry'] = True
-                            attempt['sorry_reason'] = f"Post-compilation source re-read: {disk_reason}"
-                            continue
-                    except Exception:
-                        pass
+                    # Post-compilation re-read: the gate is evaluated on the
+                    # FILE, not only on the string that was handed to the
+                    # compiler. The file is what a reviewer re-checks, so a
+                    # file that carries a sorry must not be reported as
+                    # verified even when the compiled source was clean.
+                    disk_sorry, disk_reason = self._source_on_disk_is_clean(temp_path)
+                    if disk_sorry:
+                        attempt['has_sorry'] = True
+                        attempt['sorry_reason'] = f"Post-compilation source re-read: {disk_reason}"
+                        continue
                     
                     # Additional verification: check axioms if compilation succeeded
                     axioms_clean, axioms_reason = self._verify_no_sorry_axioms(temp_path)
@@ -1100,6 +1210,20 @@ class LeanAgenticPipeline:
                             }
                             attempts.append(attempt)
                             if result.returncode == 0 and not has_sorry:
+                                # Same gate as the static path: re-read the
+                                # file that was actually compiled, so a
+                                # sorry-bearing artefact cannot be reported
+                                # as verified just because the in-memory
+                                # source was clean.
+                                disk_sorry, disk_reason = (
+                                    self._source_on_disk_is_clean(temp_path)
+                                )
+                                if disk_sorry:
+                                    attempt['has_sorry'] = True
+                                    attempt['sorry_reason'] = (
+                                        f"Post-compilation source re-read: {disk_reason}"
+                                    )
+                                    continue
                                 axioms_clean, axioms_reason = (
                                     self._verify_no_sorry_axioms(temp_path)
                                 )
@@ -1172,6 +1296,14 @@ class LeanAgenticPipeline:
         """
         Execute tactic loop with pre-generated initial code.
         
+        The initial code is only a SOURCE for the statement: its proof is
+        discarded and the tactic loop searches for a fresh one, so a `sorry`
+        in the initial proof never reaches the result -- the file is rebuilt
+        from the statement and re-verified by the loop's own gate.
+        
+        What the method must not do is ECHO a sorry-bearing artefact back as
+        though it were a result, so the failure path below refuses to.
+        
         Args:
             initial_code: Initial Lean code
             max_iterations: Maximum iterations
@@ -1182,6 +1314,15 @@ class LeanAgenticPipeline:
         # Extract expression from initial code
         match = re.search(r': (.+?) := by', initial_code)
         if not match:
+            # Never echo a sorry-bearing artefact back as a result.
+            has_sorry, sorry_reason = self.check_for_sorry(initial_code, '')
+            if has_sorry:
+                return {
+                    'success': False,
+                    'error': f'Initial code contains a sorry placeholder: {sorry_reason}',
+                    'lean_code': '',
+                    'attempts': []
+                }
             return {
                 'success': False,
                 'error': 'Could not extract expression from initial code',

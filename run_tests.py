@@ -234,6 +234,101 @@ def run_no_sorry_gate_tests():
 
     check("axioms check: clean file", test_axioms_clean_file)
 
+    # _verify_no_sorry_axioms: fail-closed on a file the compiler rejects.
+    # A file that did not compile tells us NOTHING about its axiom set, so
+    # it must not be certified clean.
+    def test_axioms_fail_closed_on_non_compiling_file():
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".lean", delete=False
+        ) as f:
+            f.write("theorem broken : : : := by\n")
+            temp_path = f.name
+        try:
+            is_clean, reason = pipeline._verify_no_sorry_axioms(temp_path)
+            assert is_clean is False
+            assert "fail-closed" in reason.lower() or "error" in reason.lower()
+        finally:
+            os.unlink(temp_path)
+
+    check("axioms check: fail-closed on non-compiling file", test_axioms_fail_closed_on_non_compiling_file)
+
+    # _verify_no_sorry_axioms: fail-closed when no axioms report is produced.
+    def test_axioms_fail_closed_without_a_report():
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".lean", delete=False
+        ) as f:
+            f.write("def helper := 1\n")
+            temp_path = f.name
+        try:
+            is_clean, reason = pipeline._verify_no_sorry_axioms(temp_path)
+            assert is_clean is False
+            assert "fail-closed" in reason.lower() or "error" in reason.lower()
+        finally:
+            os.unlink(temp_path)
+
+    check("axioms check: fail-closed without an axioms report", test_axioms_fail_closed_without_a_report)
+
+    # The message Lean ACTUALLY prints. Lean 4.33 backtick-quotes the token
+    # ("uses `sorry`"), so a detector written for the bare "uses sorry" form
+    # matches nothing and only the generic catch-all can fire.
+    def test_compiler_real_lean_sorry_warning():
+        has, reason = pipeline.check_for_sorry(
+            "theorem foo : 1 = 1 := by\n  rfl",
+            "warning: declaration uses `sorry`",
+        )
+        assert has is True
+        # The SPECIFIC detector must fire, not merely the generic catch-all.
+        assert "declaration uses sorry" in reason.lower()
+
+    check("compiler: real Lean sorry warning", test_compiler_real_lean_sorry_warning)
+
+    # End to end: Lean EXITS 0 on a file that uses `sorry` (it only warns),
+    # so the exit code cannot be the gate. A proof that Lean accepted only
+    # because it contained a sorry must still be reported as a FAILURE.
+    def test_loop_rejects_a_sorry_proof_that_lean_accepted():
+        import subprocess as sp
+
+        class _Result:
+            def __init__(self, rc=0, out="", err=""):
+                self.returncode = rc
+                self.stdout = out
+                self.stderr = err
+
+        def _fake_run(cmd, **kwargs):
+            path = ""
+            for part in (cmd if isinstance(cmd, list) else []):
+                if str(part).endswith(".lean"):
+                    path = str(part)
+            text = ""
+            if path:
+                try:
+                    with open(path) as fh:
+                        text = fh.read()
+                except OSError:
+                    text = ""
+            if "#print axioms" in text:
+                return _Result(0, "'qed_goal' does not depend on any axioms", "")
+            return _Result(0, "warning: declaration uses `sorry`", "")
+
+        real_run = sp.run
+        sp.run = _fake_run
+        try:
+            from agentic_pipeline import LeanAgenticPipeline
+
+            p = LeanAgenticPipeline(use_mathlib=False, lean_path="lean")
+            res = p.execute_tactic_loop("0 = 0")
+            assert res["success"] is False
+            assert res["attempts"]
+            assert all(a["has_sorry"] for a in res["attempts"])
+        finally:
+            sp.run = real_run
+
+    check("loop: a sorry proof is rejected", test_loop_rejects_a_sorry_proof_that_lean_accepted)
+
     return results
 
 
