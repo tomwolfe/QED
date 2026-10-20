@@ -117,6 +117,14 @@ A CLI-based agentic pipeline that converts constrained mathematical statements (
     - _suggest_type returns the joined type; _get_var_type returns the type
       to EMIT (open statements carry it in the variable declarations, closed
       statements get it ascribed inside the statement)
+    - A closed statement is ascribed at the inferred type on BOTH sides of
+      its relation -- at ℤ, at ℚ and at ℝ alike -- so the type Lean checks is
+      the type the pipeline inferred: without it Lean elaborates the numerals
+      at ℕ, where subtraction and division truncate
+    - Where Mathlib is absent, a closed rational statement falls back to ℕ
+      only when ℕ says the SAME thing as ℚ (the two readings are compared
+      exactly); a truncating reading (`5 / 2 = 2`) keeps its rational type
+      and the run fails closed instead of proving a different statement
     - Proper type selection prevents Lean type mismatch errors, and stops
       the pipeline from "verifying" a statement that is false in the type
       it claimed (Nat subtraction and division truncate)
@@ -144,6 +152,11 @@ A CLI-based agentic pipeline that converts constrained mathematical statements (
 - Proper type annotations generated ✓
 - A closed statement is ascribed at the inferred type, so Lean elaborates it
   there: "1 - 2 = 0" is no longer "verified" by Nat truncation ✓
+- A closed statement read at ℝ is ascribed at ℝ as well: "2 * (1 / 2) < 1"
+  is false over ℝ (1 < 1) and true over ℕ (0 < 1), so it is no longer
+  "verified" by Nat truncation ✓
+- The ℕ fallback for a closed rational statement is used only when ℕ and ℚ
+  agree: "5 / 2 = 2" keeps its rational type and fails closed ✓
 
 **Tactic Selection Tests** ✓
 - Algebraic expressions get ring as first candidate ✓

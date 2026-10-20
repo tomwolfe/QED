@@ -250,7 +250,10 @@ theorem qed_goal : (-1 + 1 : Int) = (0 : Int) := by
 
 The closed statement is ascribed at ℤ on both sides: without the
 ascription Lean would elaborate the numerals at ℕ, where subtraction
-truncates, and would be checking a different statement.
+truncates, and would be checking a different statement.  A closed statement
+read at ℝ is ascribed at ℝ for the same reason, and where Mathlib is absent
+a closed rational statement is read at ℕ only when ℕ and ℚ say the same
+thing -- otherwise it keeps its rational type and the run fails closed.
 
 ## Running Tests
 

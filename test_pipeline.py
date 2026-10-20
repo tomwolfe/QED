@@ -3475,6 +3475,88 @@ def test_closed_division_is_not_verified_by_nat_truncation() -> None:
         assert "sorry" not in res.get("lean_code", "")
 
 
+def test_closed_division_is_not_verified_by_nat_truncation_without_mathlib() -> None:
+    """The same guard must hold where there is no Mathlib: there the
+    rational type cannot be evaluated, so the run must fail CLOSED rather
+    than fall back to the truncating ℕ reading."""
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline(use_mathlib=False, lean_path="lean")
+    res = pipeline.run("5 / 2 = 2", max_iterations=3)
+    assert res["success"] is False
+    assert "sorry" not in res.get("lean_code", "")
+
+
+def test_closed_real_statement_is_ascribed_at_real() -> None:
+    """A closed statement has no variable declaration to carry its type, so
+    a statement read at ℝ must be ascribed at ℝ: Lean would otherwise
+    elaborate the numerals at ℕ, where the division TRUNCATES."""
+    from agentic_pipeline import LeanAgenticPipeline
+    p = LeanAgenticPipeline(use_mathlib=True)
+    code = p.generate_lean_code("2 * (1 / 2) < 1", [])
+    assert "(2 * (1 / 2) : ℝ)" in code
+    assert "(1 : ℝ)" in code
+
+
+def test_closed_real_statement_is_not_verified_by_nat_truncation() -> None:
+    """`2 * (1 / 2) < 1` is FALSE over ℝ (1 < 1) and TRUE over ℕ (0 < 1).
+
+    The pipeline must not report the truncated reading as verified -- and it
+    must never do it with a sorry.  Only the first few candidates are tried:
+    a false statement is refuted by the first of them, and every attempt
+    costs a Mathlib import.
+    """
+    from agentic_pipeline import LeanAgenticPipeline
+    res = LeanAgenticPipeline(use_mathlib=True).run(
+        "2 * (1 / 2) < 1", max_iterations=3)
+    assert res["success"] is False
+    assert "sorry" not in res.get("lean_code", "")
+
+
+def test_the_ascription_keeps_the_relation_it_was_given() -> None:
+    """Ascribing the two sides of a statement must not change the RELATION:
+    a `!=` has to come back as a `!=` (Lean spells it `≠`)."""
+    from agentic_pipeline import LeanAgenticPipeline
+    p = LeanAgenticPipeline(use_mathlib=True)
+    assert "(1 - 2 : Int) ≠ (0 : Int)" in p.generate_lean_code(
+        "1 - 2 != 0", [])
+
+
+def test_a_truncating_reading_keeps_the_rational_type() -> None:
+    """The ℕ fallback is only honest when ℕ says the SAME thing as ℚ.
+
+    `5 / 2 = 2` is true at ℕ (the division truncates) and false at ℚ, so the
+    statement must keep its rational type: read at ℕ it would report a false
+    claim as verified.
+    """
+    from agentic_pipeline import LeanAgenticPipeline
+    p = LeanAgenticPipeline(use_mathlib=False, lean_path="lean")
+    assert p._get_var_type([], "5 / 2 = 2") == "Rat"
+
+
+def test_an_exact_reading_still_falls_back_to_naturals() -> None:
+    """A statement whose ℕ reading says the same thing as its ℚ reading can
+    be read at ℕ: a clean room has no computable rational."""
+    from agentic_pipeline import LeanAgenticPipeline
+    p = LeanAgenticPipeline(use_mathlib=False, lean_path="lean")
+    assert p._get_var_type([], "4 / 2 = 2") == "Nat"
+    assert p._get_var_type(
+        [], "3 * (5 - 4 / 2) = 3 * 5 - 3 * 4 / 2") == "Nat"
+
+
+def test_the_natural_reading_must_agree_with_the_exact_one() -> None:
+    """The two readings are compared, not guessed.
+
+    A truncating division changes the claim, an exact one does not, and a
+    statement that cannot be evaluated exactly (it is open) has no verdict.
+    """
+    from agentic_pipeline import LeanAgenticPipeline, _reading_is_faithful
+    p = LeanAgenticPipeline(use_mathlib=False, lean_path="lean")
+    assert _reading_is_faithful(p._parse_statement("4 / 2 = 2")) is True
+    assert _reading_is_faithful(p._parse_statement("5 / 2 = 2")) is False
+    assert _reading_is_faithful(p._parse_statement("1 - 2 = 0")) is False
+    assert _reading_is_faithful(p._parse_statement("x + 0 = x")) is False
+
+
 def test_mass_conservation_witness_still_verifies_at_int() -> None:
     """The regression guard in the other direction: a TRUE statement must
     still be verified after the type selection changed.  The witness is a

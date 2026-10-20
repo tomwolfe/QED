@@ -11,6 +11,7 @@ import json
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
+from fractions import Fraction
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple, Dict, Any
 from parser import (
@@ -138,6 +139,155 @@ def _split_relation(expression: str) -> Optional[Tuple[str, str, str]]:
                 return expression[:i].strip(), expression[i + 1:].strip(), ch
         i += 1
     return None
+
+
+def _ascribe_sides(lean_expression: str, lean_type: str) -> Optional[str]:
+    """The statement with BOTH sides of its relation ascribed at *lean_type*.
+
+    Returns None when the statement has no top-level relation: there is
+    nothing to ascribe then, and the statement is elaborated as written.
+    The relation itself is preserved, so a ``!=`` does not come back as an
+    ``=``.
+    """
+    sides = _split_relation(lean_expression)
+    if sides is None:
+        return None
+    lhs, rhs, operator = sides
+    return f"({lhs} : {lean_type}) {operator} ({rhs} : {lean_type})"
+
+
+# The exact value of a closed numeric term, and the value the SAME term has
+# under ℕ arithmetic.  Both are needed to decide whether a statement may be
+# read at ℕ at all: ℕ truncates its division and saturates its subtraction,
+# so a statement can be TRUE at ℕ and FALSE at ℚ.
+#
+# The exact reading is rational arithmetic (``fractions.Fraction``); the ℕ
+# reading mirrors Lean: ``Nat.div`` truncates towards zero and ``Nat.sub``
+# saturates at zero.
+#
+# The exponent is bounded so that a term like ``9 ^ 999999999`` cannot turn a
+# type decision into an arbitrary computation: an exponent that large is
+# simply not evaluated, and a statement that needs it is not read at ℕ.
+_MAX_EVAL_EXPONENT = 64
+
+
+def _exact_term_value(node: Optional[ASTNode]) -> Optional[Fraction]:
+    """The EXACT rational value of a closed numeric term, or None.
+
+    None means "cannot be evaluated exactly": the term is not closed (it
+    contains a variable), it divides by zero, it is not an exact number, or
+    its exponent is not a small natural number.
+    """
+    if isinstance(node, Num):
+        if node.is_float:
+            return None
+        return Fraction(node.value)
+    if isinstance(node, Neg):
+        inner = _exact_term_value(node.expr)
+        return None if inner is None else -inner
+    if isinstance(node, BinOp):
+        left = _exact_term_value(node.left)
+        right = _exact_term_value(node.right)
+        if left is None or right is None:
+            return None
+        if node.op == '+':
+            return left + right
+        if node.op == '-':
+            return left - right
+        if node.op == '*':
+            return left * right
+        if node.op == '/':
+            if right == 0:
+                return None
+            return left / right
+        if node.op == '^':
+            if (right.denominator != 1 or right < 0
+                    or right > _MAX_EVAL_EXPONENT):
+                return None
+            return left ** int(right)
+    return None
+
+
+def _nat_term_value(node: Optional[ASTNode]) -> Optional[int]:
+    """The value of a closed numeric term under ℕ arithmetic, or None.
+
+    Lean's ℕ arithmetic truncates its division and saturates its subtraction
+    at zero; a term that needs a signed value (a negation) has no ℕ reading
+    at all.
+    """
+    if isinstance(node, Num):
+        if node.is_float or node.value < 0:
+            return None
+        return node.value
+    if isinstance(node, Neg):
+        # ℕ has no negation: the term has no ℕ reading.
+        return None
+    if isinstance(node, BinOp):
+        left = _nat_term_value(node.left)
+        right = _nat_term_value(node.right)
+        if left is None or right is None:
+            return None
+        if node.op == '+':
+            return left + right
+        if node.op == '-':
+            return max(left - right, 0)
+        if node.op == '*':
+            return left * right
+        if node.op == '/':
+            return 0 if right == 0 else left // right
+        if node.op == '^':
+            if right > _MAX_EVAL_EXPONENT:
+                return None
+            return left ** right
+    return None
+
+
+# The relation operators, by AST node type.
+_RELATION_OPERATORS: Dict[type, str] = {
+    Eq: '=', Ne: '!=', Lt: '<', Le: '<=', Gt: '>', Ge: '>=',
+}
+
+
+def _compare(operator: str, left: Any, right: Any) -> Optional[bool]:
+    """The truth of ``left operator right``, or None when it is unknown."""
+    if operator == '=':
+        return left == right
+    if operator == '!=':
+        return left != right
+    if operator == '<':
+        return left < right
+    if operator == '<=':
+        return left <= right
+    if operator == '>':
+        return left > right
+    if operator == '>=':
+        return left >= right
+    return None
+
+
+def _reading_is_faithful(node: Optional[ASTNode]) -> bool:
+    """True when the ℕ reading of a closed statement says the SAME thing as
+    its exact (ℚ) reading.
+
+    A statement may only be read at ℕ when the reading does not change the
+    claim: ℕ truncates its division and saturates its subtraction, so
+    ``5 / 2 = 2`` is TRUE at ℕ and FALSE at ℚ, while ``4 / 2 = 2`` is true
+    at both.  A statement that cannot be evaluated exactly (it is open, or
+    it divides by zero) has no verdict here, and is not faithful.
+    """
+    if not isinstance(node, (Eq, Ne, Lt, Le, Gt, Ge)):
+        return False
+    exact_left = _exact_term_value(node.left)
+    exact_right = _exact_term_value(node.right)
+    nat_left = _nat_term_value(node.left)
+    nat_right = _nat_term_value(node.right)
+    if (exact_left is None or exact_right is None
+            or nat_left is None or nat_right is None):
+        return False
+    operator = _RELATION_OPERATORS[type(node)]
+    exact_truth = _compare(operator, exact_left, exact_right)
+    nat_truth = _compare(operator, nat_left, nat_right)
+    return exact_truth is not None and exact_truth == nat_truth
 
 
 # ---------------------------------------------------------------------------
@@ -749,8 +899,17 @@ class LeanAgenticPipeline:
         # a computable rational that ``decide``/``simp`` cannot evaluate
         # (Mathlib's ``Rat`` = ℚ can, via ``norm_num``/``ring``), so without
         # Mathlib a closed rational statement keeps Lean's default ℕ.
+        #
+        # That fallback is only HONEST when ℕ says the same thing the exact
+        # reading says: ℕ truncates its division, so ``5 / 2 = 2`` is true at
+        # ℕ and false at ℚ, and reading it at ℕ would report a false claim
+        # as verified.  When the two readings disagree the statement keeps
+        # its rational type, and the run fails closed instead of proving a
+        # different statement.
         if ideal == 'Rat' and not getattr(self, 'use_mathlib', False):
-            return 'Nat'
+            if _reading_is_faithful(self._parse_statement(expression)):
+                return 'Nat'
+            return 'Rat'
         return ideal
     
     def check_for_sorry(self, lean_source: str, compiler_output: str) -> Tuple[bool, str]:
@@ -1364,7 +1523,18 @@ class LeanAgenticPipeline:
                 else:
                     theorem = f"theorem qed_goal {params} : {lean_expression} := by\n"
             else:
-                theorem = f"theorem qed_goal : {lean_expression} := by\n"
+                # A CLOSED statement has no declaration to carry its type:
+                # Lean elaborates the numerals at ℕ, where the division
+                # TRUNCATES, so the statement Lean would check would not be
+                # the statement that was written (`2 * (1 / 2) < 1` is true
+                # at ℕ and false at ℝ).  Ascribing BOTH sides of the
+                # relation pins the whole statement at the type that was
+                # inferred.
+                ascribed = _ascribe_sides(lean_expression, 'ℝ')
+                if ascribed is None:
+                    theorem = f"theorem qed_goal : {lean_expression} := by\n"
+                else:
+                    theorem = f"theorem qed_goal : {ascribed} := by\n"
         else:
             # Build theorem statement
             if filtered_vars:
@@ -1379,19 +1549,15 @@ class LeanAgenticPipeline:
                 # not be the statement that was written (`1 - 2 = 0` is true
                 # at ℕ and false at ℤ).  Ascribing BOTH sides of the relation
                 # pins the whole statement at the type that was inferred.
-                sides = None
+                ascribed = None
                 if var_type in ('Int', 'Rat') and self._type_requirements(expression):
-                    sides = _split_relation(lean_expression)
-                if sides is None:
+                    ascribed = _ascribe_sides(lean_expression, var_type)
+                if ascribed is None:
                     theorem = f"theorem qed_goal : {lean_expression} := by\n"
                 else:
-                    lhs, rhs, operator = sides
                     # The relation is preserved: ascribing the two sides
                     # must not turn a `!=` into an `=`.
-                    theorem = (
-                        f"theorem qed_goal : ({lhs} : {var_type}) {operator} "
-                        f"({rhs} : {var_type}) := by\n"
-                    )
+                    theorem = f"theorem qed_goal : {ascribed} := by\n"
             imports = ""
 
         # Add imports if using Mathlib (non-Real types)
