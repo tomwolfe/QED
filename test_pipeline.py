@@ -1853,6 +1853,10 @@ def test_agentic_adapter_called_on_failure(monkeypatch: Any) -> None:
     # Adapter should have been called because static tactics exhausted
     assert len(adapter.calls) >= 1
     assert "⊢ 0 < 1" in adapter.calls[0]
+    # ... and the repair it produced is what the run reports as verified.
+    assert result["success"] is True
+    assert "[adapter]" in result["tactic"]
+    assert "sorry" not in result["lean_code"]
 
 
 def test_adapter_repair_e2e_mocked() -> None:
@@ -3483,3 +3487,341 @@ def test_mass_conservation_witness_still_verifies_at_int() -> None:
     assert res["success"] is True
     assert "sorry" not in res["lean_code"]
     assert res["verification"]["axioms_check"] == "passed"
+
+
+# ---------------------------------------------------------------------------
+# qed-04-tactic-policy: the tactic policy is decided from the AST.
+#
+# The policy used to read the goal TEXT:
+#
+#   * ``'ring' in goal.lower()`` sent the goal ``spring = spring`` to
+#     ``ring`` -- the substring matched, and ``ring`` cannot close an
+#     identity;
+#   * ``re.search(r'\d+', goal)`` treated the NAME ``A_1`` as a numeral;
+#   * the branches were ordered so that a goal mixing a power with a
+#     division went to ``ring``, which cannot clear the division;
+#   * the local hypotheses were ignored, so a goal that was already in the
+#     context was re-proved from scratch.
+#
+# The selection is now read off a SHAPE -- the facts a statement's AST
+# carries -- the candidate chains are COMPOSED from atomic steps, and
+# ``select_tactic`` also looks at the goal state (the local hypotheses and
+# the ambient type).
+#
+# These tests are compiler-free: tactic selection is a pure decision, so it
+# must be pinned independently of whether Lean, Mathlib or a warm build
+# cache happens to be available.
+# ---------------------------------------------------------------------------
+
+
+def _cands(expression: str) -> list:
+    from agentic_pipeline import LeanAgenticPipeline
+    return LeanAgenticPipeline().get_tactic_candidates(expression)
+
+
+def test_select_tactic_does_not_match_the_keyword_ring() -> None:
+    """``spring = spring`` CONTAINS the substring "ring".  The old policy
+    matched on the text and handed the goal to ``ring``, which cannot close
+    an identity; the AST says it is reflexive, so ``rfl`` closes it."""
+    assert _sel("⊢ spring = spring") == "rfl"
+    # ... and a goal that really is algebraic still goes to ring.
+    assert _sel("⊢ a + b = b + a") == "ring"
+
+
+def test_select_tactic_recognises_an_identity_goal() -> None:
+    """An identity is a goal ``rfl`` closes; the old policy only knew the
+    identity short-circuit for STATEMENTS, not for goals."""
+    assert _sel("⊢ a = a") == "rfl"
+    assert _sel("⊢ a + b = a + b") == "rfl"
+
+
+def test_select_tactic_clears_divisions_before_polynomial_tactics() -> None:
+    """A goal that mixes a power with a division is a FIELD identity: the
+    division has to be cleared before any polynomial tactic applies, so the
+    field branch must come before the polynomial one."""
+    assert _sel("⊢ (a + b)^2 / c = (a^2 + 2ab + b^2) / c") == "field_simp"
+    # A division without a power is a field identity too.
+    assert _sel("⊢ A/V = C/K") == "field_simp"
+
+
+def test_select_tactic_uses_a_matching_hypothesis() -> None:
+    """The goal is already in the context: ``assumption`` closes it.  The
+    old policy never looked at the hypotheses, so it re-proved the goal
+    from scratch."""
+    from agentic_pipeline import LeanAgenticPipeline
+    p = LeanAgenticPipeline(use_mathlib=False, lean_path="lean")
+    assert p.select_tactic(
+        {"goal": "⊢ 0 < Q", "hypotheses": ["hQ : 0 < Q"]}
+    ) == "assumption"
+    # The same hypotheses, read from the compiler output Lean reported.
+    stderr = (
+        "error: unsolved goals\n"
+        "context:\n"
+        "hQ : 0 < Q\n"
+        "⊢ 0 < Q\n"
+    )
+    assert p.select_tactic(
+        {"goal": "⊢ 0 < Q", "error_output": stderr}
+    ) == "assumption"
+    # A goal that is NOT in the context is not closed by assumption.
+    assert p.select_tactic(
+        {"goal": "⊢ 0 < R", "hypotheses": ["hQ : 0 < Q"]}
+    ) != "assumption"
+
+
+def test_select_tactic_positivity_claim_over_a_ratio() -> None:
+    """``0 < Q / V`` with positivity hypotheses for Q and V is a claim
+    about the SIGNS OF THE FACTORS: ``positivity`` discharges it.  A bare
+    ``0 < x`` is not (the non-negativity would be the conclusion), so it
+    stays with the ordered tactics."""
+    from agentic_pipeline import LeanAgenticPipeline
+    p = LeanAgenticPipeline(use_mathlib=False, lean_path="lean")
+    assert p.select_tactic({
+        "goal": "⊢ 0 < Q / V",
+        "hypotheses": ["hQ : 0 < Q", "hV : 0 < V"],
+        "expected_type": "Real",
+    }) == "positivity"
+    assert _sel("⊢ 0 < x") == "linarith"
+
+
+def test_select_tactic_recognises_a_derivative_from_the_ast() -> None:
+    """``dA_liver/dt`` is a DIVISION by the time variable, so the AST says
+    it is a derivative; the policy must not depend on the spelling of the
+    notation.  A name that merely CONTAINS "dt" is not a derivative."""
+    assert _sel("⊢ dA_liver/dt = Q * (C_p - C_liver / Kp)") == "field_simp"
+    assert _sel("⊢ d/dt C = (A/V) - (C/K)") == "field_simp"
+    # 'dt' on its own is an ordinary name: the goal is reflexive.
+    assert _sel("⊢ dt = dt") == "rfl"
+
+
+def test_select_tactic_uses_the_ast_for_numerals() -> None:
+    """A numeral is a ``Num`` node.  ``A_1`` is a NAME that happens to
+    contain a digit, and the old digit regex treated it as a numeral."""
+    assert _sel("⊢ 2 + 2 = 4") == "norm_num"
+    assert _sel("⊢ A_1 = A_1") == "rfl"
+    assert _sel("⊢ A_1 = A_2") == "simp"
+
+
+def test_select_tactic_falls_back_to_simp_for_an_unparsable_goal() -> None:
+    """A goal the parser cannot read (a Lean construct outside the MVP
+    language) must not crash the policy: it falls back to the weakest
+    assumption."""
+    assert _sel("⊢ ∀ (x : ℝ), x + 0 = x") == "simp"
+
+
+def test_candidates_are_composed_of_atomic_steps() -> None:
+    """Every candidate is a ';'-joined chain of REGISTRY steps: the
+    combinations are composed, not pasted in as literals."""
+    from agentic_pipeline import _TACTIC_STEPS
+    rendered = set(_TACTIC_STEPS.values())
+    for expression in (
+        "Q * (C_p - C_tissue / Kp) = Q * C_p - Q * C_tissue / Kp",
+        "x < x + 1",
+        "dA_liver/dt = Q * (C_p - C_liver / Kp)",
+        "(Q / (V_central * Kp)) * A_central >= 0",
+        "2 + 2 = 4",
+    ):
+        for candidate in _cands(expression):
+            for step in candidate.split("; "):
+                assert step in rendered, (expression, candidate, step)
+
+
+def test_field_simp_then_ring_is_composed_from_atomic_steps() -> None:
+    """``field_simp; ring`` is what the composition of two steps yields."""
+    from agentic_pipeline import compose_tactic
+    assert compose_tactic(["field_simp", "ring"]) == "field_simp; ring"
+    assert compose_tactic(["intros", "field_simp", "ring"]) == \
+        "intros; field_simp; ring"
+    candidates = _cands(
+        "Q * (C_p - C_tissue / Kp) = Q * C_p - Q * C_tissue / Kp")
+    assert "intros; field_simp; ring" in candidates
+
+
+def test_candidates_are_free_of_duplicates() -> None:
+    """A candidate that repeats a step is a wasted compile."""
+    for expression in (
+        "Q * (C_p - C_tissue / Kp) = Q * C_p - Q * C_tissue / Kp",
+        "x < x + 1",
+        "dA_liver/dt = Q * (C_p - C_liver / Kp)",
+        "Vmax * C / (Km + C) >= 0",
+    ):
+        candidates = _cands(expression)
+        assert len(candidates) == len(set(candidates)), expression
+
+
+def test_candidates_for_a_derivative_statement_use_the_ode_chain() -> None:
+    """A rate-of-change statement is recognised from the AST (a division by
+    the time variable), so it leads with the field/distributive chain."""
+    candidates = _cands("dA_liver/dt = Q * (C_p - C_liver / Kp)")
+    assert candidates[0] == "intros; dsimp; field_simp; ring"
+    assert candidates.index("dsimp") < candidates.index("field_simp") \
+        < candidates.index("ring_nf")
+
+
+def test_policy_and_type_agree_about_the_field_requirement() -> None:
+    """The policy's "needs a field" flag and the inferred type must not
+    disagree: a numeric denominator is exact rational arithmetic, a
+    symbolic one is a field."""
+    from agentic_pipeline import LeanAgenticPipeline, _shape_from_node
+    p = LeanAgenticPipeline()
+    for expression, expects_field, expects_type in (
+        ("x / y = z", True, "Real"),
+        ("x / (2 + 1) = y", False, "Rat"),
+        ("4 / 2 = 2", False, "Rat"),
+        ("a + b = b + a", False, "Nat"),
+    ):
+        shape = _shape_from_node(p._parse_statement(expression))
+        assert shape.has_field_division is expects_field, expression
+        assert p._suggest_type(expression) == expects_type, expression
+
+
+def test_derivative_detection_is_a_parser_fact() -> None:
+    """``dA/dt`` is a division by the time variable.  The parser keeps the
+    time variable intact, so the AST carries the derivative instead of
+    shredding it into a product."""
+    from parser import is_derivative, parse_equation
+    node, _ = parse_equation("dA_liver/dt = Q * (C_p - C_liver / Kp)")
+    assert node is not None
+    assert is_derivative(node) is True
+    # An ordinary ratio is not a derivative.
+    node, _ = parse_equation("x / y = z")
+    assert node is not None
+    assert is_derivative(node) is False
+    # The time variable survives normalization as a NAME.
+    from parser import normalize_implicit_multiplication_expression as n
+    assert n("dA/dt") == "dA/dt"
+    assert n("dt") == "dt"
+
+
+def test_numeric_literal_detection_is_a_parser_fact() -> None:
+    """A numeral is a ``Num`` node; a name that contains a digit is not."""
+    from parser import has_numeric_literal, parse_equation
+    node, _ = parse_equation("2 + 2 = 4")
+    assert node is not None
+    assert has_numeric_literal(node) is True
+    node, _ = parse_equation("A_1 = A_2")
+    assert node is not None
+    assert has_numeric_literal(node) is False
+    assert has_numeric_literal(None) is False
+
+
+def test_numeric_denominator_is_not_a_field_statement() -> None:
+    """``x / (2 + 1)`` is exact rational arithmetic, not a field: the
+    denominator is judged by its VALUE, so the tactic policy and the type
+    selection cannot disagree about it."""
+    from parser import has_rational_structure, parse_equation
+    node, _ = parse_equation("x / (2 + 1) = y")
+    assert node is not None
+    assert has_rational_structure(node) is False
+    node, _ = parse_equation("x / y = z")
+    assert node is not None
+    assert has_rational_structure(node) is True
+
+
+# ---------------------------------------------------------------------------
+# qed-04-tactic-policy (part 2): the mutation gate.
+#
+# The mission's mutation tier measures the kill rate of the mutants of
+# agentic_pipeline.py against this suite, and the gate is 0.7.  The mutants
+# that survived the first measurement cluster in three places:
+#
+#   * the SHAPE's defaults -- the fail-safe assumptions an unparsable
+#     statement falls back to were never pinned, so flipping one of them
+#     changed nothing;
+#   * the EXPRESSION fallback of the statement parse -- a statement with no
+#     relation operator is classified as an EXPRESSION, and nothing said so;
+#   * the no-sorry gate's bookkeeping -- a failed axioms check, a missing
+#     compiler and a successful agentic repair are all paths the suite
+#     walked past without asserting what they report.
+#
+# The tests below pin those facts.
+# ---------------------------------------------------------------------------
+
+
+def test_statement_shape_defaults_are_the_fail_safe_assumptions() -> None:
+    """A statement that cannot be parsed must not make the policy GUESS: the
+    shape's defaults are the weakest facts, and they are what the policy
+    falls back to."""
+    from agentic_pipeline import StatementShape
+    shape = StatementShape()
+    assert shape.node is None
+    assert shape.free_vars == []
+    assert shape.is_derivative is False
+    assert shape.is_identity is False
+    assert shape.is_closed_numeric is False
+    assert shape.has_division is False
+    assert shape.has_field_division is False
+    assert shape.has_power is False
+    assert shape.has_numeral is False
+    assert shape.has_numeric_ops is False
+    assert shape.is_inequality is False
+    assert shape.is_strict is False
+    assert shape.is_positivity_claim is False
+    assert shape.is_metzler_positivity is False
+    assert shape.is_step_conservation is False
+    assert shape.is_boundary_flow is False
+
+
+def test_candidates_for_a_bare_expression_use_the_expression_parse() -> None:
+    """A statement with no relation operator is still classified: it is
+    parsed as an EXPRESSION, not as an empty statement."""
+    candidates = _cands("x / y")
+    assert "field_simp" in candidates
+    assert candidates.index("field_simp") < candidates.index("simp")
+
+
+def test_a_failed_axioms_check_is_recorded_as_a_sorry_leak(monkeypatch) -> None:
+    """When the axioms report shows a sorry, the attempt is recorded as a
+    sorry leak: the trace must not say "no sorry" about a proof that leaned
+    on a sorry axiom."""
+    import subprocess as _sp
+    from agentic_pipeline import LeanAgenticPipeline
+
+    def _run(cmd, **kwargs):
+        text = _read_lean(_lean_path_in(cmd))
+        if "#print axioms" in text:
+            return _FakeLeanResult(
+                0, "'qed_goal' depends on axioms: [sorryAx]", ""
+            )
+        return _FakeLeanResult(0, "", "")
+
+    monkeypatch.setattr(_sp, "run", _run)
+    p = LeanAgenticPipeline(use_mathlib=False, lean_path="lean")
+    res = p.execute_tactic_loop("0 = 0")
+    assert res["success"] is False
+    assert res["attempts"]
+    assert all(a["has_sorry"] for a in res["attempts"]), res["attempts"]
+
+
+def test_a_sorry_in_another_declaration_is_still_a_leak() -> None:
+    """The axioms report is about THIS theorem, but a sorry anywhere in the
+    file is a leak: the file must not be certified clean."""
+    import os
+    import tempfile
+    from agentic_pipeline import LeanAgenticPipeline
+    p = LeanAgenticPipeline()
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".lean", delete=False) as f:
+        f.write(
+            "theorem qed_goal : 1 = 1 := by\n  rfl\n\n"
+            "theorem other : 2 = 2 := by\n  sorry\n"
+        )
+        path = f.name
+    try:
+        is_clean, reason = p._verify_no_sorry_axioms(path)
+        # A file that carries a sorry must never be certified clean.  (With
+        # no Lean at all the check fails closed, which is also not clean.)
+        assert is_clean is False
+        assert "sorry" in reason.lower() or "fail-closed" in reason.lower()
+    finally:
+        os.unlink(path)
+
+
+def test_missing_lean_compiler_is_reported_not_crashed(monkeypatch) -> None:
+    """A missing Lean compiler is an explicit failure, not a crash."""
+    from agentic_pipeline import LeanAgenticPipeline
+    p = LeanAgenticPipeline(use_mathlib=False, lean_path="lean")
+    monkeypatch.setattr(p, "lean_path", None)
+    res = p.execute_tactic_loop("0 = 0")
+    assert res["success"] is False
+    assert "Lean compiler not found" in res["error"]
+    assert res["attempts"] == []

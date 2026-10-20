@@ -362,6 +362,22 @@ def normalize_implicit_multiplication_expression(expr: str) -> str:
         letters = match.group(2)
         return num + ' * ' + ' * '.join(letters)
     result = re.sub('(?<![' + _WORD + '])(\\d+)([a-z]{2,})(?![a-zA-Z])', _split_chain, result)
+
+    def _split_pair(match: 're.Match[str]') -> str:
+        """Split a standalone lowercase letter pair into a product.
+
+        ``dt`` is the EXCEPTION: it is the time variable of a rate-of-change
+        term (``dA/dt``), and the generic rule would read it as the product
+        ``d * t``.  That shreds the derivative notation before the parser
+        ever sees it -- the statement ``dA/dt`` would reach the AST as
+        ``(dA / d) * t``, which is not the statement that was written, and
+        which no AST-driven policy can recognise as a derivative.
+        """
+        pair = match.group(0)
+        if pair == 'dt':
+            return pair
+        return f'{pair[0]} * {pair[1]}'
+
     changed = True
     while changed:
         changed = False
@@ -380,7 +396,7 @@ def normalize_implicit_multiplication_expression(expr: str) -> str:
     while changed:
         changed = False
         new_result = re.sub(
-            '(?<![' + _WORD + '])([a-z])([a-z])(?![' + _WORD + '])', '\\1 * \\2', result)
+            '(?<![' + _WORD + '])([a-z])([a-z])(?![' + _WORD + '])', _split_pair, result)
         if new_result != result:
             changed = True
         result = new_result
@@ -751,6 +767,92 @@ def has_polynomial_structure(node: Optional[ASTNode]) -> bool:
         return has_polynomial_structure(node.left) or has_polynomial_structure(node.right)
     return False
 
+def has_numeric_literal(node: Optional[ASTNode]) -> bool:
+    """Return True if the tree contains a numeric literal.
+
+    Replaces the ``\\d+`` text heuristic: a numeral is a ``Num`` node, and
+    an identifier may contain digits without being a numeral (``A_1`` is a
+    NAME, not the number 1).
+    """
+    if node is None:
+        return False
+    if isinstance(node, Num):
+        return True
+    if isinstance(node, Neg):
+        return has_numeric_literal(node.expr)
+    if isinstance(node, BinOp):
+        return has_numeric_literal(node.left) or has_numeric_literal(node.right)
+    if isinstance(node, (Eq, Ne, Lt, Le, Gt, Ge)):
+        return has_numeric_literal(node.left) or has_numeric_literal(node.right)
+    return False
+
+
+# A rate-of-change term ``dA/dt`` parses as the division ``dA / dt``, so a
+# derivative is recognised by its SHAPE: the numerator is the differentiated
+# quantity and the denominator is the time variable.
+_DERIVATIVE_HEAD_RE = re.compile(r'^d[A-Za-z_]')
+_TIME_VARIABLE_RE = re.compile(r'^dt$|^d[A-Za-z_]')
+
+
+def _is_derivative_head(node: Optional[ASTNode]) -> bool:
+    """True for the differentiated quantity of a rate-of-change term.
+
+    ``dA_liver`` is a NAME (it carries an upper-case letter), but a
+    standalone lowercase pair is read as a PRODUCT by the MVP input
+    language, so ``dgut`` reaches the AST as ``d * gut``.
+    """
+    if isinstance(node, Var):
+        return node.name == 'd' or bool(_DERIVATIVE_HEAD_RE.match(node.name))
+    if isinstance(node, BinOp) and node.op == '*':
+        return isinstance(node.left, Var) and node.left.name == 'd'
+    return False
+
+
+def _is_time_variable(node: Optional[ASTNode]) -> bool:
+    """True for the time variable of a rate-of-change term.
+
+    ``dt`` is kept intact by the tokenizer (see ``_split_pair``), so it
+    reaches the AST as the name ``dt``.  The shredded spelling ``d * t`` is
+    accepted as well, so a derivative is still recognised if the name is
+    written out as an explicit product.
+    """
+    if isinstance(node, Var):
+        return bool(_TIME_VARIABLE_RE.match(node.name))
+    if isinstance(node, BinOp) and node.op == '*':
+        return (isinstance(node.left, Var) and node.left.name == 'd'
+                and isinstance(node.right, Var) and node.right.name == 't')
+    return False
+
+
+def _is_derivative_division(node: BinOp) -> bool:
+    """True when *node* is ``<quantity> / <time variable>``."""
+    return _is_derivative_head(node.left) and _is_time_variable(node.right)
+
+
+def is_derivative(node: Optional[ASTNode]) -> bool:
+    """Return True if the tree contains a rate-of-change term.
+
+    ``dA_liver/dt`` parses as the division ``dA_liver / dt``, so the
+    derivative is a DIVISION whose numerator is the differentiated quantity
+    and whose denominator is the time variable.
+
+    Recognising it in the AST replaces the ``d.../d...`` text regex, which
+    cannot tell a derivative from an ordinary ratio that happens to be
+    written with a ``d``-shaped denominator.
+    """
+    if node is None:
+        return False
+    if isinstance(node, BinOp):
+        if node.op == '/' and _is_derivative_division(node):
+            return True
+        return is_derivative(node.left) or is_derivative(node.right)
+    if isinstance(node, Neg):
+        return is_derivative(node.expr)
+    if isinstance(node, (Eq, Ne, Lt, Le, Gt, Ge)):
+        return is_derivative(node.left) or is_derivative(node.right)
+    return False
+
+
 def find_division_variables(node: Optional[ASTNode]) -> set[str]:
     """Find variable names that appear in division denominators.
 
@@ -792,8 +894,14 @@ def has_rational_structure(node: Optional[ASTNode]) -> bool:
     """Detect division over symbolic (non-numeric) variables.
 
     Returns True when the AST contains a ``/`` operator whose right operand
-    is *not* a pure numeric literal – i.e. the division is symbolic and
-    therefore lives in a field (``ℝ``) rather than ``ℕ`` or ``ℤ``.
+    is *not* numeric -- i.e. the division is symbolic and therefore lives in
+    a field (``ℝ``) rather than ``ℕ``, ``ℤ`` or ``ℚ``.
+
+    The denominator is judged by its VALUE, not by its shape: ``x / 2`` and
+    ``x / (2 + 1)`` are exact rational arithmetic (no field needed), while
+    ``x / y`` is a field operation.  This is the same rule the type
+    selection uses (``_is_numeric_only``), so the tactic policy and the
+    inferred type cannot disagree about whether a statement needs a field.
 
     Also detects rational patterns of the form ``Vmax * C / (Km + C)`` where
     the denominator is a sum containing a symbolic variable, which
@@ -806,11 +914,11 @@ def has_rational_structure(node: Optional[ASTNode]) -> bool:
         return False
     if isinstance(node, BinOp):
         if node.op == '/':
-            if not isinstance(node.right, Num):
+            if not _is_numeric_only(node.right):
                 return True
         if node.op == '*' and isinstance(node.right, BinOp) and (node.right.op == '/'):
             inner_div = node.right
-            if not isinstance(inner_div.right, Num):
+            if not _is_numeric_only(inner_div.right):
                 return True
         return has_rational_structure(node.left) or has_rational_structure(node.right)
     if isinstance(node, Neg):

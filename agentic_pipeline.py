@@ -10,8 +10,9 @@ import os
 import json
 import subprocess
 import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Tuple, Dict, Any
+from typing import List, Optional, Sequence, Tuple, Dict, Any
 from parser import (
     parse_equation,
     parse_expression,
@@ -23,11 +24,17 @@ from parser import (
     has_polynomial_structure,
     has_rational_structure,
     find_division_variables,
-    statement_kind,
     is_ode,
     involves_derivative,
-    is_numeric_equality,
+    canonical_form,
+    extract_free_variables,
+    has_numeric_literal,
+    is_derivative,
+    is_positivity,
+    is_discrete_step_conservation,
+    is_nonneg_product,
     _collect_vars,
+    _is_identity,
     _is_numeric_only,
     ASTNode,
     BinOp,
@@ -128,6 +135,229 @@ def _split_relation(expression: str) -> Optional[Tuple[str, str]]:
                 return expression[:i].strip(), expression[i + 1:].strip()
         i += 1
     return None
+
+
+# ---------------------------------------------------------------------------
+# Tactic policy.
+#
+# The tactic a statement gets is decided from its AST, never from its TEXT.
+# A text heuristic cannot tell a derivative from an ordinary ratio, a
+# numeral from an identifier that happens to contain digits, or a
+# polynomial identity from a goal that merely mentions "ring" -- and each
+# of those mistakes hands the prover a tactic that cannot close the goal.
+#
+# The policy has three parts:
+#
+#   * a SHAPE: the facts about a statement that are read off its AST
+#     (identity? field division? polynomial? ordered? closed numeric?);
+#   * a PLAN: the tactic CHAINS the shape makes worth trying, in order;
+#   * a COMPOSER: a chain is built from ATOMIC STEPS, so a combination
+#     like "field_simp; ring" is DERIVED from the statement instead of
+#     being pasted in as a literal.
+# ---------------------------------------------------------------------------
+
+# The atomic steps a candidate chain is built from.  A chain is rendered by
+# joining its steps with "; ", so "field_simp; ring" is COMPOSED from two
+# steps rather than written as one literal.
+_TACTIC_STEPS: Dict[str, str] = {
+    'intros': 'intros',
+    'intro': 'intro',
+    'dsimp': 'dsimp',
+    'field_simp': 'field_simp',
+    'ring': 'ring',
+    'ring_nf': 'ring_nf',
+    'linarith': 'linarith',
+    'positivity': 'positivity',
+    'norm_num': 'norm_num',
+    'decide': 'decide',
+    'omega': 'omega',
+    'simp': 'simp',
+    'simp_mul_div': 'simp [mul_sub, mul_div_assoc]',
+    'rfl': 'rfl',
+    'refl': 'refl',
+    'assumption': 'assumption',
+}
+
+
+def compose_tactic(steps: Sequence[str]) -> str:
+    """Render a chain of atomic steps as ONE Lean tactic block.
+
+    ``compose_tactic(['field_simp', 'ring'])`` is ``'field_simp; ring'``: the
+    combination is derived from the steps, not pasted in as a literal.
+    """
+    return '; '.join(_TACTIC_STEPS.get(step, step) for step in steps)
+
+
+@dataclass
+class StatementShape:
+    """The facts about a statement that the tactic policy decides on.
+
+    Every field is read off the statement's AST.  ``node`` is None when the
+    statement could not be parsed at all; the policy then assumes the
+    weakest facts (no division, no power, no numerals), which keeps the
+    selection fail-safe rather than arbitrary.
+    """
+
+    node: Optional[ASTNode] = None
+    free_vars: List[str] = field(default_factory=list)
+    is_derivative: bool = False
+    is_identity: bool = False
+    is_closed_numeric: bool = False
+    has_division: bool = False
+    has_field_division: bool = False
+    has_power: bool = False
+    has_numeral: bool = False
+    has_numeric_ops: bool = False
+    is_inequality: bool = False
+    is_strict: bool = False
+    is_positivity_claim: bool = False
+    is_metzler_positivity: bool = False
+    is_step_conservation: bool = False
+    is_boundary_flow: bool = False
+
+
+@dataclass
+class GoalState:
+    """What the prover knows about the goal it has to close.
+
+    The goal itself is only ONE part of the state: the local hypotheses
+    decide whether the goal is already in the context, and the ambient
+    type decides whether it is a decidable proposition.
+    """
+
+    text: str = ''
+    node: Optional[ASTNode] = None
+    shape: StatementShape = field(default_factory=StatementShape)
+    hypotheses: List[str] = field(default_factory=list)
+    expected_type: str = ''
+
+
+def _is_positivity_claim(node: Optional[ASTNode]) -> bool:
+    """A comparison of a product or a ratio against zero.
+
+    ``k * x > 0`` is a claim about the SIGNS OF THE FACTORS, which is what
+    ``positivity`` discharges.  A bare ``x > 0`` is not: there the
+    non-negativity would be the conclusion itself.
+    """
+    if not isinstance(node, (Lt, Le, Gt, Ge)):
+        return False
+    for side, other in ((node.left, node.right), (node.right, node.left)):
+        if isinstance(side, Num) and side.value == 0:
+            return contains_op(other, '*') or contains_op(other, '/')
+    return False
+
+
+def _shape_from_node(node: Optional[ASTNode]) -> StatementShape:
+    """Read the policy's facts about *node* off its AST."""
+    shape = StatementShape(node=node)
+    if node is None:
+        return shape
+    shape.free_vars = extract_free_variables(node)
+    shape.is_derivative = is_derivative(node)
+    shape.has_division = contains_op(node, '/')
+    shape.has_field_division = has_rational_structure(node)
+    shape.has_power = has_polynomial_structure(node)
+    shape.has_numeral = has_numeric_literal(node)
+    shape.has_numeric_ops = has_numeric_ops(node)
+    shape.is_inequality = is_inequality(node)
+    shape.is_strict = isinstance(node, (Lt, Gt))
+    shape.is_identity = isinstance(node, Eq) and _is_identity(node)
+    shape.is_closed_numeric = (
+        isinstance(node, Eq)
+        and not shape.free_vars
+        and _is_numeric_only(node.left)
+        and _is_numeric_only(node.right)
+    )
+    shape.is_positivity_claim = _is_positivity_claim(node)
+    shape.is_metzler_positivity = is_positivity(node)
+    shape.is_step_conservation = is_discrete_step_conservation(node)
+    shape.is_boundary_flow = is_nonneg_product(node)
+    return shape
+
+
+def _plan_for_shape(shape: StatementShape) -> List[List[str]]:
+    """The tactic chains *shape* makes worth trying, most specific first.
+
+    Each chain is a list of ATOMIC STEP NAMES; the caller renders it with
+    :func:`compose_tactic`.  The order is the policy: the most specific
+    shape gets the most specific chain, and the generic tactics are only
+    appended as a fallback by the caller.
+    """
+    # A closed numeric equality: ``simp``/``decide`` discharge it without
+    # assuming anything, and they are a stronger credibility signal than
+    # ``rfl``.
+    if shape.is_closed_numeric:
+        return [['simp'], ['decide'], ['norm_num'], ['ring']]
+    # A rate-of-change statement: ``dsimp`` normalizes the derivative head,
+    # ``field_simp`` clears the divisions, ``ring`` closes the identity.
+    if shape.is_derivative:
+        return [
+            ['intros', 'dsimp', 'field_simp', 'ring'],
+            ['intros', 'field_simp', 'ring'],
+            ['dsimp'], ['field_simp'], ['ring_nf'], ['simp'],
+            ['norm_num'], ['decide'],
+        ]
+    # A reflexive statement: both sides are structurally equal.
+    if shape.is_identity:
+        return [['rfl'], ['simp'], ['refl']]
+    # A Jacobian off-diagonal (Metzler) positivity claim.
+    if shape.is_metzler_positivity:
+        return [
+            ['intros', 'positivity'], ['positivity'],
+            ['intros', 'field_simp', 'ring'],
+        ]
+    # A discrete-step conservation claim.
+    if shape.is_step_conservation:
+        return [
+            ['intros', 'field_simp', 'ring'], ['field_simp'],
+            ['ring'], ['intros', 'positivity'],
+        ]
+    # A boundary inflow non-negativity claim: (E / F) * A >= 0.
+    if shape.is_boundary_flow:
+        return [
+            ['intros', 'positivity'],
+            ['intros', 'field_simp', 'linarith'],
+            ['intros', 'field_simp', 'ring'],
+            ['positivity'], ['linarith'],
+        ]
+    # A strict inequality over a division: a positivity claim about the
+    # ratio, discharged by ``positivity`` over the positivity hypotheses.
+    if shape.is_strict and shape.has_division:
+        return [
+            ['intros', 'positivity'],
+            ['intros', 'field_simp', 'positivity'],
+            ['positivity'],
+        ]
+    # A field statement: the division is symbolic, so the divisions have to
+    # be cleared before any polynomial tactic applies.
+    if shape.has_field_division:
+        return [
+            ['intros', 'positivity'],
+            ['intros', 'field_simp', 'ring'],
+            ['intros', 'dsimp', 'field_simp', 'ring'],
+            ['intros', 'simp_mul_div', 'ring'],
+            ['intro'], ['dsimp'], ['field_simp'], ['simp_mul_div'],
+            ['ring_nf'], ['linarith'], ['simp'], ['norm_num'],
+        ]
+    # A division over an exact numeric denominator.
+    if shape.has_division:
+        return [
+            ['intros', 'positivity'],
+            ['intros', 'field_simp', 'ring'],
+            ['field_simp'], ['ring'], ['norm_num'], ['simp'],
+        ]
+    # An ordered claim.
+    if shape.is_inequality:
+        return [
+            ['intros', 'positivity'],
+            ['intros', 'linarith'],
+            ['linarith'], ['omega'], ['simp'], ['norm_num'],
+        ]
+    # A polynomial identity.
+    if shape.has_power:
+        return [['ring'], ['simp'], ['linarith'], ['norm_num']]
+    # Anything else.
+    return [['rfl'], ['simp'], ['norm_num'], ['decide'], ['ring']]
 
 
 class LeanAgenticPipeline:
@@ -801,221 +1031,168 @@ class LeanAgenticPipeline:
             return line
         return None
 
-    def get_tactic_candidates(self, expression: str) -> List[str]:
-        """
-        Get ordered tactic candidates based on expression type.
-        
-        Args:
-            expression: Mathematical expression
-            
-        Returns:
-            Ordered list of tactic candidates
-        """
-        candidates = []
-        
-        # Closed numeric equalities (no free variables, both sides are concrete
-        # integers): prefer ``simp``/``decide`` over ``rfl`` so the proof is
-        # genuinely non-reflexive.  ``rfl`` would still work (Lean's kernel can
-        # evaluate closed terms), but ``decide`` or ``simp`` is a stronger
-        # credibility signal for formal-verification gates.
-        if is_numeric_equality(expression):
-            candidates.extend(['simp', 'decide', 'norm_num', 'ring'])
-            for tactic in self.tactic_candidates:
-                if tactic not in candidates:
-                    candidates.append(tactic)
-            return candidates
-        
-        # Use statement_kind for identity short-circuit
-        kind = statement_kind(expression)
-        if kind == 'identity':
-            candidates.extend(['rfl', 'simp', 'refl'])
-            for tactic in self.tactic_candidates:
-                if tactic not in candidates:
-                    candidates.append(tactic)
-            return candidates
-        
-        # ODE / rate-of-change inputs: prioritize the Mathlib tactics that
-        # handle derivatives, division and algebraic structure in the RHS.
-        # ``dsimp`` normalizes the derivative head, ``field_simp`` clears the
-        # divisions (C_a = A/V_a, C_b/K), and ``ring_nf`` closes the
-        # resulting polynomial/field identities. This is the bridge from
-        # "algebraic identity checking" to genuine formal-ODE verification.
-        # Compound tactics chain multiple steps in one tactic block.
-        if is_ode(expression) or involves_derivative(expression):
-            candidates.extend([
-                'intros; dsimp; field_simp; ring',
-                'intros; field_simp; ring',
-                'dsimp', 'field_simp', 'ring_nf', 'simp',
-                'norm_num', 'decide',
-            ])
-            for tactic in self.tactic_candidates:
-                if tactic not in candidates:
-                    candidates.append(tactic)
-            return candidates
-        
-        # Parse expression to get AST for classification
-        eq, _ = parse_equation(expression)
-        
-        ast_node: ASTNode | None = eq
-        if ast_node is None:
-            # For non-equation expressions, parse the full expression
-            tokens = tokenize(expression)
-            tokens = normalize_implicit_multiplication(tokens)
-            ast_node, _ = parse_expression(tokens)
-        
-        # Dynamical invariants: Jacobian off-diagonal (Metzler) positivity
-        # ``E / F > 0`` proves via ``positivity``;
-        # discrete-step conservation proves via ``field_simp; ring``.
-        try:
-            from parser import is_positivity as _is_metz, \
-                is_discrete_step_conservation as _is_step, \
-                is_nonneg_product as _is_bflow
-        except ImportError:
-            _is_metz = _is_step = _is_bflow = None  # type: ignore[assignment]
-        if _is_metz is not None and _is_metz(ast_node):
-            candidates.extend(['intros; positivity', 'positivity',
-                               'intros; field_simp; ring'])
-            for tactic in self.tactic_candidates:
-                if tactic not in candidates:
-                    candidates.append(tactic)
-            return candidates
-        if _is_step is not None and _is_step(ast_node):
-            candidates.extend(['intros; field_simp; ring', 'field_simp',
-                               'ring', 'intros; positivity'])
-            for tactic in self.tactic_candidates:
-                if tactic not in candidates:
-                    candidates.append(tactic)
-            return candidates
-        if _is_bflow is not None and _is_bflow(ast_node):
-            # Boundary inflow non-negativity: (E / F) * A >= 0
-            # Proved by positivity (all factors non-negative) or
-            # field_simp + linarith (linear combination of non-neg terms).
-            candidates.extend([
-                'intros; positivity',
-                'intros; field_simp; linarith',
-                'intros; field_simp; ring',
-                'positivity', 'linarith',
-            ])
-            for tactic in self.tactic_candidates:
-                if tactic not in candidates:
-                    candidates.append(tactic)
-            return candidates
+    def _with_fallbacks(self, candidates: List[str]) -> List[str]:
+        """Append the generic tactics that every statement may need.
 
-        # Symbolic Real / rational expressions: division over symbolic
-        # variables lives in a field ℝ.  Prioritize ``intro`` first (to
-        # bring universally quantified variables into scope), then the
-        # Mathlib field algebra stack (dsimp to normalize, field_simp to
-        # clear divisions, ring_nf to close polynomial/field identities),
-        # followed by linarith for any linear side-conditions.
-        # ``simp [mul_sub, mul_div_assoc]`` handles the canonical
-        # distributive-over-division identity that field_simp alone cannot.
-        # Compound tactics (semicoloned sequences) are tried as atomic
-        # proof terms: e.g. ``by intros; field_simp; ring`` chains intro
-        # + field simplification + ring in one tactic block.
-        # Metzler positivity: strict inequality with division → positivity tactic
-        if isinstance(ast_node, (Gt, Lt)) and contains_op(ast_node, '/'):
-            candidates.extend([
-                'intros; positivity',
-                'intros; field_simp; positivity',
-                'positivity',
-            ])
-            for tactic in self.tactic_candidates:
-                if tactic not in candidates:
-                    candidates.append(tactic)
-            return candidates
-
-        if has_rational_structure(ast_node):
-            candidates.extend([
-                'intros; positivity',
-                'intros; field_simp; ring',
-                'intros; dsimp; field_simp; ring',
-                'intros; simp [mul_sub, mul_div_assoc]; ring',
-                'intro', 'dsimp', 'field_simp',
-                'simp [mul_sub, mul_div_assoc]',
-                'ring_nf', 'linarith', 'simp', 'norm_num',
-            ])
-            for tactic in self.tactic_candidates:
-                if tactic not in candidates:
-                    candidates.append(tactic)
-            return candidates
-        
-        # Classify using AST helpers
-        if contains_op(ast_node, '/'):
-            candidates.extend([
-                'intros; positivity',
-                'intros; field_simp; ring',
-                'field_simp', 'ring', 'norm_num', 'simp',
-            ])
-        elif is_inequality(ast_node):
-            candidates.extend([
-                'intros; positivity',
-                'intros; linarith',
-                'linarith', 'omega', 'simp', 'norm_num',
-            ])
-        elif has_polynomial_structure(ast_node):
-            candidates.extend(['ring', 'simp', 'linarith', 'norm_num'])
-        else:
-            candidates.extend(['rfl', 'simp', 'norm_num', 'decide', 'ring'])
-        
-        # Add remaining tactics
+        The order of the policy is preserved: a fallback never displaces a
+        candidate the shape asked for, it only fills in what is missing.
+        """
         for tactic in self.tactic_candidates:
             if tactic not in candidates:
                 candidates.append(tactic)
-        
         return candidates
-    
+
+    def get_tactic_candidates(self, expression: str) -> List[str]:
+        """
+        Get ordered tactic candidates for *expression*.
+
+        The order is derived from the statement's AST: the statement is
+        parsed once into a :class:`StatementShape`, the shape decides which
+        tactic CHAINS are worth trying, and each chain is rendered from
+        atomic steps (:func:`compose_tactic`).  Nothing here inspects the
+        text of the statement, so a goal that merely mentions a tactic
+        cannot capture the policy.
+
+        Args:
+            expression: Mathematical expression
+
+        Returns:
+            Ordered list of tactic candidates
+        """
+        shape = _shape_from_node(self._parse_statement(expression))
+        plan = _plan_for_shape(shape)
+        candidates = [compose_tactic(chain) for chain in plan]
+        return self._with_fallbacks(candidates)
+
+    @staticmethod
+    def _strip_turnstile(goal: str) -> str:
+        """The goal text without Lean's turnstile prefix."""
+        text = (goal or '').strip()
+        if text.startswith('⊢'):
+            text = text[1:].strip()
+        return text
+
+    @staticmethod
+    def _local_hypotheses(error_info: Dict[str, Any]) -> List[str]:
+        """The local hypotheses the prover has in scope, if any.
+
+        They may be handed over directly (``hypotheses``) or come with the
+        compiler output Lean reported (``error_output``/``stderr``).
+        """
+        hypotheses = error_info.get('hypotheses')
+        if isinstance(hypotheses, str):
+            hypotheses = [hypotheses]
+        if isinstance(hypotheses, (list, tuple)):
+            found = [h for h in hypotheses if isinstance(h, str) and h.strip()]
+            if found:
+                return found
+        for key in ('error_output', 'stderr', 'compiler_output'):
+            output = error_info.get(key)
+            if isinstance(output, str) and output:
+                _goal, context = LeanAgenticPipeline._extract_goal_context(output)
+                if context:
+                    return context
+        return []
+
+    def _goal_state(self, error_info: Dict[str, Any]) -> 'GoalState':
+        """What the prover knows about the goal it has to close."""
+        goal_text = self._strip_turnstile(error_info.get('goal', ''))
+        node = self._parse_statement(goal_text)
+        return GoalState(
+            text=goal_text,
+            node=node,
+            shape=_shape_from_node(node),
+            hypotheses=self._local_hypotheses(error_info),
+            expected_type=error_info.get('expected_type', '') or '',
+        )
+
+    @staticmethod
+    def _goal_in_context(state: 'GoalState') -> bool:
+        """True when the goal is exactly one of the local hypotheses.
+
+        Then the goal is already proved: ``assumption`` closes it.
+        """
+        if state.node is None or not state.hypotheses:
+            return False
+        goal_form = canonical_form(state.node)
+        for hypothesis in state.hypotheses:
+            _name, separator, proposition = hypothesis.partition(':')
+            if not separator:
+                proposition = hypothesis
+            proposition = proposition.strip()
+            if not proposition:
+                continue
+            node, _ = parse_equation(proposition)
+            if node is not None and canonical_form(node) == goal_form:
+                return True
+        return False
+
+    def _tactic_for_goal_state(self, state: 'GoalState') -> str:
+        """The tactic that fits the goal state.
+
+        The order is load-bearing and is not obvious from the branches
+        alone:
+
+          * the FIELD branch comes before the polynomial branch, because a
+            goal that mixes a power with a division is a field identity --
+            ``ring`` cannot clear the division;
+          * the ORDERED branch comes before the Bool branch, because a
+            comparison is proved by ``linarith`` whatever the ambient type
+            is, while the Bool branch is about a decidable proposition.
+        """
+        shape = state.shape
+        # The goal is already in the context.
+        if self._goal_in_context(state):
+            return 'assumption'
+        # A reflexive goal.
+        if shape.is_identity:
+            return 'rfl'
+        # A positivity claim about the factors of a product or a ratio.
+        if shape.is_positivity_claim:
+            return 'positivity'
+        # A field identity: the divisions have to be cleared before any
+        # polynomial tactic applies.
+        if shape.is_derivative or shape.has_division:
+            return 'field_simp'
+        # An ordered claim.
+        if shape.is_inequality:
+            return 'linarith'
+        # A Bool-typed goal is a decidable proposition.
+        if 'Bool' in state.expected_type:
+            return 'decide'
+        # Polynomial algebra.
+        if shape.has_power:
+            return 'ring'
+        # Concrete numerals.
+        if shape.has_numeral and shape.has_numeric_ops:
+            return 'norm_num'
+        # Plain algebraic structure (+ or * without ^).
+        if shape.has_numeric_ops:
+            return 'ring'
+        # Nothing to go on.
+        return 'simp'
+
     def select_tactic(self, error_info: Dict[str, Any]) -> str:
         """
-        Select tactic based on error information and goal state.
-        
+        Select a tactic from the goal state.
+
+        The decision is read off the goal's AST and the local hypotheses,
+        never off the goal TEXT: a text heuristic cannot tell a derivative
+        from an ordinary ratio, a numeral from an identifier that happens
+        to contain digits, or a polynomial identity from a goal that merely
+        mentions "ring".
+
         Args:
-            error_info: Dictionary with error details
-            
+            error_info: Dictionary with error details.  Recognised keys:
+                ``goal`` (with or without the turnstile), ``expected_type``,
+                ``hypotheses`` (a list of ``name : proposition`` strings) and
+                ``error_output``/``stderr`` (the compiler output the
+                hypotheses can be read from).
+
         Returns:
             Selected tactic
         """
-        goal = error_info.get('goal', '')
-        expected_type = error_info.get('expected_type', '')
-        
-        # Strip the turnstile prefix from Lean goals for parsing
-        goal_text = goal.lstrip('⊢ ').strip()
-        
-        # Parse the goal to get an AST for classification
-        goal_eq, _ = parse_equation(goal_text)
-        goal_ast: ASTNode | None = goal_eq
-        if goal_ast is None:
-            tokens = tokenize(goal_text)
-            tokens = normalize_implicit_multiplication(tokens)
-            goal_ast, _ = parse_expression(tokens)
-        
-        # Check goal for ring patterns (polynomial structure or algebraic ops)
-        if has_polynomial_structure(goal_ast) or 'ring' in goal.lower():
-            return 'ring'
-
-        # Formal-ODE goals: derivatives with division (C_a = A/V_a, C_b/K)
-        # are field identities; clear the divisions with field_simp first,
-        # then let ring close them.
-        if involves_derivative(goal) or contains_op(goal_ast, '/'):
-            return 'field_simp'
-        
-        # Check for inequality patterns
-        if is_inequality(goal_ast):
-            return 'linarith'
-        
-        # Check for type mismatch with Bool
-        if 'Bool' in expected_type:
-            return 'decide'
-        
-        # Check for numeric normalization (+, *, or digits)
-        if has_numeric_ops(goal_ast) and re.search(r'\d+', goal):
-            return 'norm_num'
-        
-        # Check for algebraic structure (+ or * without ^) — ring or norm_num
-        if has_numeric_ops(goal_ast):
-            return 'ring'
-        
-        # Default to simp
-        return 'simp'
+        return self._tactic_for_goal_state(self._goal_state(error_info))
     
     def generate_lean_code(self, expression: str, free_vars: Optional[List[str]] = None) -> str:
         """

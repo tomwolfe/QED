@@ -68,8 +68,25 @@ A CLI-based agentic pipeline that converts constrained mathematical statements (
      elaborates it at the type the pipeline inferred
 
 9. **Tactic Policy (AST-Aware)** ✓ (Hardened via Tether Mission qed-04)
-   - Tactic candidates selected based on parsed AST structure (not keyword-based)
-   - Uses helper functions: `contains_op()`, `is_inequality()`, `has_polynomial_structure()`
+   - The policy is decided from the statement's AST, never from its TEXT: the
+     statement is parsed once into a SHAPE (reflexive? field division?
+     polynomial? ordered? closed numeric?), the shape selects a PLAN (the
+     tactic chains worth trying, in order), and each chain is COMPOSED from
+     atomic steps (`compose_tactic`), so `intros; field_simp; ring` is
+     derived from the statement rather than pasted in as a literal
+   - The text heuristics are gone: the old `'ring' in goal.lower()` sent the
+     goal `spring = spring` to `ring` (the substring matched), and the old
+     digit regex treated the NAME `A_1` as a numeral
+   - `select_tactic` is GOAL-STATE aware: a goal that is already one of the
+     local hypotheses is closed by `assumption`, a claim about the signs of
+     the factors of a product or a ratio by `positivity`, a `Bool`-typed
+     goal by `decide`
+   - The field branch comes before the polynomial branch, so a goal that
+     mixes a power with a division is cleared with `field_simp` instead of
+     being handed to `ring`
+   - A rate-of-change term is recognised from the AST (`parser.is_derivative`
+     — a division by the time variable); the parser keeps the time variable
+     `dt` intact so the derivative survives normalization
    - Division expressions -> field_simp first
    - Inequality expressions -> linarith/omega first
    - Polynomial/algebraic expressions -> ring first
@@ -124,6 +141,16 @@ A CLI-based agentic pipeline that converts constrained mathematical statements (
 - Goal-based tactic selection works for ring patterns ✓
 - Goal-based tactic selection works for inequality patterns ✓
 - AST-based classification works correctly ✓
+- A goal that merely CONTAINS the substring "ring" (`spring = spring`) is
+  not sent to `ring`: it is reflexive, so `rfl` closes it ✓
+- A goal mixing a power with a division is cleared with `field_simp`, not
+  `ring` ✓
+- A goal that is already in the local hypotheses is closed by `assumption` ✓
+- A positivity claim over a ratio is closed by `positivity` ✓
+- Every candidate is a `;`-joined chain of registry steps, and the chains
+  are composed rather than pasted in ✓
+- The policy's "needs a field" flag and the inferred type cannot disagree
+  (`x / (2 + 1) = y` is Rat and not a field statement) ✓
 
 **Sorry Detection Tests** ✓
 - Source contains sorry ✓
@@ -209,7 +236,9 @@ The following Tether missions were executed to harden the pipeline:
    (control words end at the first non-letter, so a longer control word can never leak its tail
    into the statement), braced powers/subscripts, and a fail-closed tokenizer
 4. **qed-03-type-inference**: Verified type inference and proper type annotations
-5. **qed-04-tactic-policy**: Refactored tactic selection to use AST-based classification
+5. **qed-04-tactic-policy**: Refactored tactic selection to use AST-based classification:
+   the policy is read off a statement SHAPE, the candidate chains are composed from
+   atomic steps, and `select_tactic` is goal-state aware (local hypotheses, ambient type)
 6. **qed-05-integration-validation**: End-to-end verification with real Lean 4 compiler (v4.0.0) - all 18 end-to-end tests pass
 
 ### Conclusion

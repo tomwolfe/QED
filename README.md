@@ -11,8 +11,10 @@ A CLI-based agentic pipeline that converts constrained mathematical statements i
 - **Sorry Detection**: Regex-based detection of `sorry` and `sorryAx` in compiler output and source
 - **Max Iteration Control**: Prevents token spiraling with configurable iteration limits
 - **Strict No-Sorry Verification**: Success only when final Lean file contains no `sorry`
-- **AST-Aware Tactic Selection**: Uses parsed AST structure for smarter tactic ordering
-- **ODE / Rate-of-Change Awareness**: Recognizes `d<var>/dt = <rhs>` ODEs (`parser.is_ode`, `parser.parse_ode`) and derivative notation anywhere (`parser.involves_derivative`); `get_tactic_candidates` prioritizes `dsimp` / `field_simp` / `ring` for derivative / rate-of-change inputs
+- **AST-Aware Tactic Selection**: The policy is decided from the statement's AST (a reflexive statement, a field division, a polynomial, an ordered claim, a closed numeric equality), never from the text of the statement
+- **Goal-State-Aware Selection**: `select_tactic` also reads the local hypotheses and the ambient type: a goal that is already in the context is closed by `assumption`, a claim about the signs of the factors by `positivity`
+- **Composed Tactic Chains**: Candidate chains are built from atomic steps, so `intros; field_simp; ring` is derived from the statement rather than written as one literal
+- **ODE / Rate-of-Change Awareness**: Recognizes `d<var>/dt = <rhs>` ODEs (`parser.is_ode`, `parser.parse_ode`) and derivative notation anywhere (`parser.is_derivative` — a division by the time variable); `get_tactic_candidates` prioritizes `dsimp` / `field_simp` / `ring` for derivative / rate-of-change inputs
 - **Comprehensive Sorry Detection**: Detects `sorry`, `sorryAx`, `Tactic.sorry`, and `Lean.Elab.Tactic.sorry`
 - **Fail-Closed Axiom Verification**: Verifies no sorry axioms in compiled output
 
@@ -91,6 +93,21 @@ The pipeline automatically orders tactics based on the AST structure of the inpu
 - **omega**: For quantifier-free nonlinear arithmetic (requires Mathlib)
 - **field_simp**: For field operations (required for PBPK perfusion terms with division, e.g. `C_p = A_central / V_central`)
 - **dsimp**: For simplifying derivative / rate-of-change heads in formal-ODE inputs
+
+### How the tactics are chosen
+
+The policy is decided from the statement's AST, never from its text:
+
+1. the statement is parsed once into a **shape** — the facts its AST carries
+   (reflexive? field division? polynomial? ordered? closed numeric?);
+2. the shape selects a **plan** — the tactic chains worth trying, in order;
+3. each chain is **composed** from atomic steps, so `intros; field_simp; ring`
+   is derived from the statement rather than pasted in as a literal.
+
+`select_tactic` reads the same shape plus the *goal state*: a goal that is
+already one of the local hypotheses is closed by `assumption`, a claim about
+the signs of the factors of a product or a ratio by `positivity`, and a
+`Bool`-typed goal by `decide`.
 
 ## Output
 
