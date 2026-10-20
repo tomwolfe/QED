@@ -85,87 +85,18 @@ constraints:
 
 verification:
   commands:
-    # 1. Both sizes export, and each file carries its own size.
-    - >-
-      python3 -c "import subprocess,sys,pathlib;
-      for n in (6,14):
-        out=f'/tmp/qed_iso_fin{n}.lean';
-        r=subprocess.run([sys.executable,'../VeriTrial/scripts/export_pbpk_to_qed.py','--fin-n',str(n),'--lean-out',out,'--out',f'/tmp/fin{n}_lemmas.txt'],capture_output=True,text=True);
-        assert r.returncode==0, f'export --fin-n {n} failed: '+r.stdout[-800:]+r.stderr[-800:];
-        t=pathlib.Path(out).read_text();
-        assert f'Fin {n}' in t, f'Fin {n} file does not mention Fin {n}';
-        other = 14 if n==6 else 6;
-        assert f'Fin {other}' not in t, f'Fin {n} file also mentions Fin {other}';
-        print(f'Fin {n} exported OK ({len(t)} bytes)')"
-    # 2. Both compile, axiom-clean, no sorry. Compiled with the QED lake env
-    #    so Mathlib resolves; a clean room has no .lake, so this asserts
-    #    against the repo's own build.
-    - >-
-      python3 -c "import subprocess,sys,pathlib;
-      for n in (6,14):
-        f=f'/tmp/qed_iso_fin{n}.lean';
-        r=subprocess.run(['lake','env','lean',f],cwd='.',capture_output=True,text=True);
-        out=r.stdout+r.stderr;
-        assert r.returncode==0, f'Fin {n} failed to compile: '+out[-1500:];
-        assert 'sorry' not in out.lower(), f'Fin {n} mentions sorry: '+out[-800:];
-        print(f'Fin {n} compiles clean')"
-    # 3. `#print axioms` is exactly the three standard axioms for each file.
-    #    The probe is the emitted file plus one `#print axioms` line per
-    #    headline theorem, compiled and read back from stdout.
-    - >-
-      python3 -c "import subprocess,sys,pathlib,re;
-      allowed={'propext','Classical.choice','Quot.sound'};
-      names=['extracted_offDiag_nonneg','extracted_colSum_eq_zero','veritrial_mass_dissipation'];
-      for n in (6,14):
-        f=pathlib.Path(f'/tmp/qed_iso_fin{n}.lean');
-        t=f.read_text();
-        present=[nm for nm in names if re.search(r'theorem\s+'+nm+r'\b',t)];
-        assert present, f'Fin {n} file is missing the headline theorems: '+str(names);
-        probe=pathlib.Path(f'/tmp/axioms_fin{n}.lean');
-        probe.write_text(t+'\n'+'\n'.join('#print axioms '+nm for nm in present)+'\n');
-        r=subprocess.run(['lake','env','lean',str(probe)],cwd='.',capture_output=True,text=True);
-        out=r.stdout+r.stderr;
-        assert r.returncode==0, f'axiom probe for Fin {n} failed: '+out[-1200:];
-        got=[m.strip() for m in re.findall(r'depends on axioms:\s*\[([^\]]*)\]', out)];
-        assert got, f'Fin {n} produced no axiom output: '+out[-600:];
-        assert len(got)==len(present), f'Fin {n}: expected {len(present)} axiom lines, got {got}';
-        for line in got:
-          ax=set(a.strip() for a in line.split(',') if a.strip());
-          assert ax and ax<=allowed, f'Fin {n} theorem depends on unexpected axioms: '+line;
-        print(f'Fin {n} axioms clean: {got}')"
-    # 4. `_network_for_fin` accepts 6 and 14, rejects everything else.
-    - >-
-      python3 -c "import sys; sys.path.insert(0,'../VeriTrial/src');
-      sys.path.insert(0,'../VeriTrial');
-      import importlib.util, pathlib;
-      spec=importlib.util.spec_from_file_location('expmod','../VeriTrial/scripts/export_pbpk_to_qed.py');
-      m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m);
-      from insilico_trial.pbpk.model import DEFAULT_ORGAN_NETWORK, STANDARD_14_ORGAN_NETWORK;
-      assert m._network_for_fin(6)==DEFAULT_ORGAN_NETWORK, 'Fin 6 does not map to DEFAULT_ORGAN_NETWORK';
-      assert m._network_for_fin(14)==STANDARD_14_ORGAN_NETWORK, 'Fin 14 does not map to STANDARD_14_ORGAN_NETWORK';
-      assert len(DEFAULT_ORGAN_NETWORK)==6 and len(STANDARD_14_ORGAN_NETWORK)==14;
-      for bad in (0,1,5,7,13,15,99):
-        try:
-          m._network_for_fin(bad); raise AssertionError(f'_network_for_fin({bad}) should have raised');
-        except ValueError: pass
-      print('_network_for_fin accepts 6 and 14 and rejects the rest')"
-    # 5. The six-organ default is untouched.
-    - >-
-      python3 -c "import sys; sys.path.insert(0,'../VeriTrial/src');
-      from insilico_trial.pbpk.model import DEFAULT_ORGAN_NETWORK, STANDARD_14_ORGAN_NETWORK;
-      assert DEFAULT_ORGAN_NETWORK==('gut','liver','central','peripheral','effect','elim'), DEFAULT_ORGAN_NETWORK;
-      assert len(STANDARD_14_ORGAN_NETWORK)==14;
-      print('DEFAULT_ORGAN_NETWORK unchanged')"
-    # 6. Zero domain leakage in QED.
-    - >-
-      python3 -c "import re,pathlib;
-      pat=re.compile(r'pbpk|liver|dili|cyp|ka_rate', re.I);
-      hits=[(f,i,l) for f in ('parser.py','agentic_pipeline.py')
-            for i,l in enumerate(pathlib.Path(f).read_text().splitlines(),1)
-            if pat.search(l)];
-      assert not hits, 'domain leakage: '+str(hits[:5]);
-      print('zero domain leakage')"
-    # 7. QED's own suites still pass.
+    # The checks live in a script rather than in one-line `python3 -c` gates:
+    # Tether runs verification commands with shlex.split and shell=False, so a
+    # YAML-folded multi-line Python payload becomes a SyntaxError (a compound
+    # statement cannot follow a semicolon). A broken GATE looks exactly like a
+    # broken deliverable, so the gates are a file that can be read and run.
+    - "python3 scripts/check_fin14_exports.py export"
+    - "python3 scripts/check_fin14_exports.py compile"
+    - "python3 scripts/check_fin14_exports.py axioms"
+    - "python3 scripts/check_fin14_exports.py network"
+    - "python3 scripts/check_fin14_exports.py default"
+    - "python3 scripts/check_fin14_exports.py leakage"
+    # QED's own suites still pass.
     - "python3 run_tests.py"
     - "python3 -m pytest test_pipeline.py -q"
   timeout_seconds: 2400
