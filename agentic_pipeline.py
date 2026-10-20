@@ -18,6 +18,7 @@ from parser import (
     parse_expression,
     tokenize,
     normalize_implicit_multiplication,
+    normalize_implicit_multiplication_expression,
     contains_op,
     is_inequality,
     has_numeric_ops,
@@ -111,12 +112,14 @@ def _join_types(types: List[str]) -> str:
     return strongest
 
 
-def _split_relation(expression: str) -> Optional[Tuple[str, str]]:
+def _split_relation(expression: str) -> Optional[Tuple[str, str, str]]:
     """Split a statement at its top-level relation operator.
 
-    Returns ``(left, right)`` -- the two sides with the text they were
-    written with, so ascribing them does not change the statement -- or None
-    when the statement has no top-level relation.
+    Returns ``(left, right, operator)`` -- the two sides with the text they
+    were written with, so ascribing them does not change the statement, and
+    the operator itself so an ascribed statement keeps its RELATION (a
+    ``!=`` must not come back as an ``=``) -- or None when the statement has
+    no top-level relation.
     """
     depth = 0
     i = 0
@@ -130,11 +133,75 @@ def _split_relation(expression: str) -> Optional[Tuple[str, str]]:
         elif depth == 0:
             two = expression[i:i + 2]
             if two in ('!=', '<=', '>='):
-                return expression[:i].strip(), expression[i + 2:].strip()
-            if ch in ('=', '<', '>'):
-                return expression[:i].strip(), expression[i + 1:].strip()
+                return expression[:i].strip(), expression[i + 2:].strip(), two
+            if ch in ('=', '<', '>', '≠'):
+                return expression[:i].strip(), expression[i + 1:].strip(), ch
         i += 1
     return None
+
+
+# ---------------------------------------------------------------------------
+# Rendering the statement as Lean.
+#
+# The input language is not Lean: implicit multiplication (``2ab``) and the
+# LaTeX-like macros (``\frac``, ``\le``, ``a^{2}``) are part of it, and
+# Lean has none of them.  Interpolating the user's text into the theorem
+# therefore handed Lean a statement it cannot even parse -- the pipeline
+# accepted the input, then failed on a statement the user never wrote.
+#
+# The rendering keeps the shape the PARSER read: it uses the same
+# normalization, so the term Lean receives is the term that was parsed.
+# Two adjustments are Lean-specific:
+#
+#   * a QUALIFIED name followed by an operand is an APPLICATION
+#     (``Nat.succ 0``), not a product: Lean has no ``Nat.succ * 0``;
+#   * ``!=`` is not a Lean operator -- Lean spells it ``≠``.
+# ---------------------------------------------------------------------------
+
+# A Lean name, possibly qualified (``Nat.succ``).
+_LEAN_NAME = r'[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*'
+
+# Two operands separated by whitespace, with no operator between them.
+# The parser reads that adjacency as a product, so Lean has to see one too.
+_LEAN_ADJACENCY_RE = re.compile(
+    r'(?P<left>' + _LEAN_NAME + r'|\d+|\))'
+    r'(?P<space>\s+)'
+    r'(?P<right>' + _LEAN_NAME + r'|\d+|\()'
+)
+
+
+def _lean_adjacency(match: 're.Match[str]') -> str:
+    """Render one adjacent pair of operands as Lean.
+
+    A qualified name applied to an operand is an APPLICATION in Lean, so
+    ``Nat.succ 0`` stays as it is; every other adjacency is a product.
+
+    The left operand must also really START where the match starts: the
+    regex can find the tail of a name (``lpha`` in ``\\alpha``), and a
+    LaTeX control word is not an operand at all.  Both are left alone, so
+    an unsupported macro stays unsupported instead of being mangled.
+    """
+    left = match.group('left')
+    if left != ')':
+        before = match.string[:match.start()]
+        if before and (before[-1].isalnum() or before[-1] in '_\\'):
+            return match.group(0)
+    if '.' in left:
+        return match.group(0)
+    return f'{left} * {match.group("right")}'
+
+
+def to_lean_expression(expression: str) -> str:
+    """Render *expression* as a Lean term.
+
+    The result is the statement the USER wrote, in Lean's vocabulary: the
+    same structure the parser read, with the implicit products made
+    explicit and the LaTeX-like macros expanded.
+    """
+    text = normalize_implicit_multiplication_expression(expression)
+    text = _LEAN_ADJACENCY_RE.sub(_lean_adjacency, text)
+    # Lean has no `!=` operator; `≠` is how it spells "not equal".
+    return text.replace('!=', '≠')
 
 
 # ---------------------------------------------------------------------------
@@ -368,9 +435,17 @@ class LeanAgenticPipeline:
     the final Lean file to compile without `sorry` placeholders.
     """
     
+    # The deliverables a run produces: the audit trail and the verified
+    # Lean artefact.  Both are written by ``run()`` -- the PUBLIC entry
+    # point -- so the CLI and a programmatic caller get the same files.
+    TRACE_FILE = "traces.json"
+    ARTIFACT_FILE = "output.lean"
+
     def __init__(self, use_mathlib: bool = True, lean_path: Optional[str] = None,
                  adapter: Optional[Any] = None,
-                 lean_compile_timeout: int = 180):
+                 lean_compile_timeout: int = 180,
+                 trace_path: Optional[str] = None,
+                 artifact_path: Optional[str] = None):
         """
         Initialize the pipeline.
         
@@ -383,8 +458,13 @@ class LeanAgenticPipeline:
                 a fresh `.lake` has to import Mathlib from source, which is
                 far slower than a warm build. A budget tuned to a warm cache
                 makes correctness depend on machine speed.
+            trace_path: Where to write the audit trail (default ``traces.json``).
+            artifact_path: Where to write the verified Lean source
+                (default ``output.lean``).
         """
         self.lean_compile_timeout = lean_compile_timeout
+        self.trace_path = trace_path or self.TRACE_FILE
+        self.artifact_path = artifact_path or self.ARTIFACT_FILE
         self.lean_path = lean_path or self._find_lean()
         # Detect Lake environment for hermetic Mathlib builds
         self._lake_root = self._find_lake_root()
@@ -1208,6 +1288,12 @@ class LeanAgenticPipeline:
         if free_vars is None:
             free_vars = []
 
+        # The term Lean receives is the term the USER wrote: the input
+        # language carries implicit products and LaTeX-like macros that Lean
+        # does not understand, so the text is rendered before it is
+        # interpolated into the theorem.
+        lean_expression = to_lean_expression(expression)
+
         # Determine type
         var_type = self._get_var_type(free_vars, expression)
         
@@ -1273,19 +1359,19 @@ class LeanAgenticPipeline:
                 if all_hyps:
                     theorem = (
                         f"theorem qed_goal {params} {all_hyps} "
-                        f": {expression} := by\n"
+                        f": {lean_expression} := by\n"
                     )
                 else:
-                    theorem = f"theorem qed_goal {params} : {expression} := by\n"
+                    theorem = f"theorem qed_goal {params} : {lean_expression} := by\n"
             else:
-                theorem = f"theorem qed_goal : {expression} := by\n"
+                theorem = f"theorem qed_goal : {lean_expression} := by\n"
         else:
             # Build theorem statement
             if filtered_vars:
                 # An OPEN statement carries its type in the variable
                 # declarations, so Lean elaborates it at that type.
                 params = ' '.join([f'({v} : {var_type})' for v in filtered_vars])
-                theorem = f"theorem qed_goal {params} : {expression} := by\n"
+                theorem = f"theorem qed_goal {params} : {lean_expression} := by\n"
             else:
                 # A CLOSED statement has no declaration to carry its type:
                 # Lean elaborates the numerals at ℕ, where subtraction and
@@ -1295,13 +1381,15 @@ class LeanAgenticPipeline:
                 # pins the whole statement at the type that was inferred.
                 sides = None
                 if var_type in ('Int', 'Rat') and self._type_requirements(expression):
-                    sides = _split_relation(expression)
+                    sides = _split_relation(lean_expression)
                 if sides is None:
-                    theorem = f"theorem qed_goal : {expression} := by\n"
+                    theorem = f"theorem qed_goal : {lean_expression} := by\n"
                 else:
-                    lhs, rhs = sides
+                    lhs, rhs, operator = sides
+                    # The relation is preserved: ascribing the two sides
+                    # must not turn a `!=` into an `=`.
                     theorem = (
-                        f"theorem qed_goal : ({lhs} : {var_type}) = "
+                        f"theorem qed_goal : ({lhs} : {var_type}) {operator} "
                         f"({rhs} : {var_type}) := by\n"
                     )
             imports = ""
@@ -1625,17 +1713,80 @@ class LeanAgenticPipeline:
         expression = match.group(1)
         return self.execute_tactic_loop(expression, max_iterations)
     
+    def write_trace(self, result: Dict[str, Any],
+                    path: Optional[str] = None) -> bool:
+        """Write the audit trail for *result* to the trace file.
+
+        The trace is a REQUIRED deliverable (the README promises it on both
+        success and failure), so it is written by ``run()`` -- the public
+        entry point -- rather than only by the CLI.  A programmatic caller
+        that forgets to write it would otherwise leave the check "was
+        traces.json written?" satisfied by whatever file happened to be on
+        disk already, which is how a stale trace passes for a fresh one.
+
+        Writing the trace must never turn a VERIFIED proof into a crash:
+        an unwritable path is reported in the result (``trace_error``) and
+        the run's verdict is left untouched.
+
+        Returns:
+            True when the trace was written, False when it could not be.
+        """
+        target = Path(path or self.trace_path)
+        try:
+            target.write_text(
+                json.dumps(result, indent=2, default=str), encoding='utf-8')
+        except (OSError, TypeError, ValueError) as e:
+            result['trace_error'] = f"Failed to write {target}: {e}"
+            return False
+        return True
+
+    def write_artifact(self, result: Dict[str, Any],
+                       path: Optional[str] = None) -> bool:
+        """Write the VERIFIED Lean source to the artefact file.
+
+        Only a successful run produces an artefact: a failed run must not
+        leave a stale proof behind that a reader could mistake for the
+        current one.  The bytes written are exactly the source that was
+        compiled, so the artefact recompiles on its own.
+
+        Returns:
+            True when the artefact was written, False when it could not be
+            (or when the run did not succeed).
+        """
+        if not result.get('success'):
+            return False
+        source = result.get('lean_code') or ''
+        if not source.strip():
+            return False
+        target = Path(path or self.artifact_path)
+        try:
+            target.write_text(source, encoding='utf-8')
+        except OSError as e:
+            result['artifact_error'] = f"Failed to write {target}: {e}"
+            return False
+        return True
+
     def run(self, latex_input: str, max_iterations: int = 15) -> Dict[str, Any]:
         """
         Run the full pipeline on mathematical input.
-        
+
+        The audit trail and the verified artefact are written here, not only
+        in the CLI: they are the pipeline's deliverables, so a programmatic
+        caller gets the same files a command-line caller does.
+
         Args:
             latex_input: Mathematical expression
+            max_iterations: Maximum number of tactic attempts
             
         Returns:
             Dictionary with results
         """
-        return self.execute_tactic_loop(latex_input, max_iterations)
+        result = self.execute_tactic_loop(latex_input, max_iterations)
+        # The artefact first, the trail last: the trail is the record of
+        # the run, so it is written once everything else is settled.
+        self.write_artifact(result)
+        self.write_trace(result)
+        return result
 
 
 def main() -> None:
@@ -1670,9 +1821,9 @@ def main() -> None:
     pipeline = LeanAgenticPipeline(adapter=adapter)
     
     result = pipeline.run(expression, max_iterations=args.max_iterations)
-    # NOTE: run() uses default iteration budget; honor --max-iterations:
-    # re-run via execute_tactic_loop when non-default requested.
-    
+    # ``run()`` honours ``--max-iterations`` (it is passed straight
+    # through) and writes the audit trail to traces.json.
+
     if result['success']:
         print("✓ Verification Successful! (no sorry)")
         print(f"\nGenerated Lean:\n{result['lean_code']}")
@@ -1680,11 +1831,18 @@ def main() -> None:
     else:
         print("✗ Verification Failed")
         print(f"Error: {result['error']}")
-    
-    # Write traces
-    with open('traces.json', 'w') as f:
-        json.dump(result, f, indent=2)
-    
+        attempts = result.get('attempts') or []
+        print(f"\nAttempts ({len(attempts)}):")
+        for attempt in attempts:
+            print(
+                f"  [{attempt.get('iteration')}] {attempt.get('tactic')} "
+                f"-> exit {attempt.get('exit_code')}"
+                + (f" ({attempt.get('sorry_reason')})"
+                   if attempt.get('sorry_reason') else "")
+            )
+        if result.get('infrastructure_failure'):
+            print("\nThis was an ENVIRONMENT failure, not a refutation.")
+
     sys.exit(0 if result['success'] else 1)
 
 

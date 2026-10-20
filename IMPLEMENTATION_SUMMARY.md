@@ -40,7 +40,12 @@ A CLI-based agentic pipeline that converts constrained mathematical statements (
 6. **Audit Trail** ✓
    - Detailed JSON logging of all attempts
    - Tracks iterations, exit codes, sorry reasons, and selected tactics
-   - Writes `traces.json` on both success and failure
+   - Writes `traces.json` on both success and failure — from `run()`, so the
+     CLI and a programmatic caller get the same deliverable
+   - Writes `output.lean` (the verified source, byte for byte as compiled) on
+     success only; a failed run leaves the previous artefact untouched
+   - A failure to write either is reported in the result, never raised over
+     a verified proof
 
 7. **Formula Parser (Hardened)** ✓ (Hardened via Tether Mission qed-02)
    - Recursive descent parser for MVP arithmetic expressions
@@ -64,6 +69,12 @@ A CLI-based agentic pipeline that converts constrained mathematical statements (
    - Declares free variables as theorem parameters
    - Chooses type-appropriate defaults from the statement's AST (see 10)
    - Generates valid Lean syntax with proper spacing
+   - Renders the statement in Lean's vocabulary before it is interpolated:
+     implicit products ("2ab" -> "2 * a * b"), LaTeX-like macros ("\frac",
+     "\cdot", "\le", "a^{2}") and "!=" (Lean spells it "≠"), so the compiler
+     is handed the statement the user wrote rather than the text they typed
+   - Keeps a qualified name applied to an operand an APPLICATION ("Nat.succ 0"),
+     because Lean has no "Nat.succ * 0"
    - Ascribes the type of a closed statement inside the statement, so Lean
      elaborates it at the type the pipeline inferred
 

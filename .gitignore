@@ -6,7 +6,8 @@ traces.json
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-output.lean
+# output.lean is NOT ignored: it is the generated, verified Lean source of
+# the last run, and it is tracked so a reviewer can see what was proved.
 *.egg-info/
 .venv/
 venv/

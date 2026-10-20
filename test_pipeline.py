@@ -6,8 +6,13 @@ from typing import Any
 from pathlib import Path
 
 
-def test_identity_theorem() -> bool:
-    """Test the pipeline with a simple Lean theorem"""
+def test_identity_theorem() -> None:
+    """The CLI must verify a simple theorem end to end.
+
+    This used to RETURN a bool, which pytest reports as a warning
+    (``PytestReturnNotNoneWarning``) and never checks: a broken CLI still
+    produced a green suite.  It asserts now.
+    """
     latex_input = r"Nat.succ 0 = 1"
 
     print("Testing Lean 4 Agentic Pipeline with Simple Theorem")
@@ -23,37 +28,30 @@ def test_identity_theorem() -> bool:
             ["python3", "agentic_pipeline.py", latex_input],
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=180,
             env=env,
         )
-
-        print("\nSTDOUT:")
-        print(result.stdout)
-        if result.stderr:
-            print("\nSTDERR:")
-            print(result.stderr)
-
-        print(f"\nExit Code: {result.returncode}")
-        print("=" * 60)
-
-        if result.returncode == 0:
-            print("✓ Test PASSED: Theorem was verified successfully!")
-            return True
-        else:
-            print("✗ Test FAILED: Could not verify the theorem")
-            return False
-
     except subprocess.TimeoutExpired:
-        print("✗ Test FAILED: Command timed out")
-        return False
-    except Exception as e:
-        print(f"✗ Test FAILED: {str(e)}")
-        return False
+        raise AssertionError("the CLI timed out") from None
+
+    print("\nSTDOUT:")
+    print(result.stdout)
+    if result.stderr:
+        print("\nSTDERR:")
+        print(result.stderr)
+
+    print(f"\nExit Code: {result.returncode}")
+    print("=" * 60)
+
+    assert result.returncode == 0, (
+        f"the CLI failed to verify '{latex_input}':\n{result.stdout}\n"
+        f"{result.stderr}")
+    assert "Verification Successful" in result.stdout, result.stdout
 
 
 if __name__ == "__main__":
-    success = test_identity_theorem()
-    sys.exit(0 if success else 1)
+    test_identity_theorem()
+    sys.exit(0)
 
 
 # --- Parser: String normalization tests ---
@@ -3825,3 +3823,285 @@ def test_missing_lean_compiler_is_reported_not_crashed(monkeypatch) -> None:
     assert res["success"] is False
     assert "Lean compiler not found" in res["error"]
     assert res["attempts"] == []
+
+
+# ---------------------------------------------------------------------------
+# qed-05-integration-validation: the DELIVERABLES of a run.
+#
+# The mission's third task is "verify traces.json is written correctly", and
+# the integration check asserted that the file EXISTS -- a file the library
+# API never wrote, so the assertion was satisfied by whatever the previous
+# run had left behind.  A stale trace passes for a fresh one, which is the
+# one thing an audit trail must never do.
+#
+# The deliverables are now written by ``run()`` (the public entry point), so
+# the CLI and a programmatic caller get the same files.  The tests below pin:
+#
+#   * the audit trail is written on success AND on failure, and it agrees
+#     with the result it describes;
+#   * failing to write it is never fatal: a verified proof stays verified;
+#   * the artefact holds exactly the verified source, is sorry-free, and
+#     RECOMPILES STANDALONE -- the way a reviewer would re-check it;
+#   * a failed run leaves no proof artefact behind.
+# ---------------------------------------------------------------------------
+
+
+def _deliverable_pipeline(tmp_path, **kwargs):
+    """A pipeline whose deliverables are redirected into *tmp_path*."""
+    from agentic_pipeline import LeanAgenticPipeline
+
+    kwargs.setdefault("trace_path", str(tmp_path / "traces.json"))
+    kwargs.setdefault("artifact_path", str(tmp_path / "output.lean"))
+    return LeanAgenticPipeline(**kwargs)
+
+
+def test_run_writes_the_audit_trail_on_success(tmp_path) -> None:
+    """A verified run must leave an audit trail behind."""
+    import json
+
+    pipeline = _deliverable_pipeline(tmp_path)
+    result = pipeline.run("0 = 0")
+    trace_path = tmp_path / "traces.json"
+    assert trace_path.exists(), "the audit trail was not written"
+    trace = json.loads(trace_path.read_text())
+    assert trace["success"] is True
+    assert trace["lean_code"] == result["lean_code"]
+    assert trace["tactic"] == result["tactic"]
+
+
+def test_run_writes_the_audit_trail_on_failure(tmp_path) -> None:
+    """A FAILED run must leave an audit trail too: the failure is the part
+    of the audit trail that matters most."""
+    import json
+
+    pipeline = _deliverable_pipeline(tmp_path)
+    result = pipeline.run("hello world")
+    assert result["success"] is False
+    trace_path = tmp_path / "traces.json"
+    assert trace_path.exists(), "the audit trail was not written for a failure"
+    trace = json.loads(trace_path.read_text())
+    assert trace["success"] is False
+    assert trace["error"] == result["error"]
+
+
+def test_the_audit_trail_records_every_attempt(tmp_path) -> None:
+    """The trail must describe the search that happened, not just the verdict."""
+    import json
+
+    pipeline = _deliverable_pipeline(tmp_path)
+    result = pipeline.run("0 = 0")
+    trace = json.loads((tmp_path / "traces.json").read_text())
+    assert len(trace["attempts"]) == len(result["attempts"])
+    assert trace["attempts"], "the trail recorded no attempt at all"
+    for recorded, live in zip(trace["attempts"], result["attempts"]):
+        assert recorded["tactic"] == live["tactic"]
+        assert recorded["exit_code"] == live["exit_code"]
+        assert recorded["has_sorry"] == live["has_sorry"]
+
+
+def test_a_trace_write_failure_is_not_fatal(tmp_path) -> None:
+    """An unwritable trace path must not turn a VERIFIED proof into a crash.
+
+    The verdict is the pipeline's product; the trail is its record.  A
+    failure to record must be reported, not raised over the result.
+    """
+    pipeline = _deliverable_pipeline(
+        tmp_path, trace_path=str(tmp_path / "no-such-dir" / "traces.json"))
+    result = pipeline.run("0 = 0")
+    assert result["success"] is True, "a trace failure changed the verdict"
+    assert "trace_error" in result
+
+
+def test_the_artifact_holds_the_verified_source(tmp_path) -> None:
+    """``output.lean`` must hold EXACTLY the source that was verified."""
+    pipeline = _deliverable_pipeline(tmp_path)
+    result = pipeline.run("0 = 0")
+    artifact_path = tmp_path / "output.lean"
+    assert artifact_path.exists(), "the verified artefact was not written"
+    artifact = artifact_path.read_text()
+    assert artifact == result["lean_code"]
+    assert "sorry" not in artifact
+    assert "sorryAx" not in artifact
+    assert "theorem qed_goal" in artifact
+
+
+def test_a_failed_run_leaves_no_proof_artifact(tmp_path) -> None:
+    """A failed run must not leave a proof behind that a reader could
+    mistake for the current one."""
+    pipeline = _deliverable_pipeline(tmp_path)
+    result = pipeline.run("hello world")
+    assert result["success"] is False
+    assert not (tmp_path / "output.lean").exists()
+
+
+def test_a_failed_run_does_not_overwrite_an_earlier_artifact(tmp_path) -> None:
+    """A later failure must not silently replace the last VERIFIED artefact."""
+    pipeline = _deliverable_pipeline(tmp_path)
+    verified = pipeline.run("0 = 0")
+    artifact_path = tmp_path / "output.lean"
+    assert artifact_path.read_text() == verified["lean_code"]
+
+    failed = pipeline.run("hello world")
+    assert failed["success"] is False
+    assert artifact_path.read_text() == verified["lean_code"]
+
+
+def test_the_artifact_recompiles_standalone(tmp_path) -> None:
+    """The artefact must compile ON ITS OWN: that is what a reviewer does.
+
+    The source in the artefact is the source the pipeline compiled, so it
+    must still compile when nothing else is there.
+    """
+    import subprocess as _sp
+
+    pipeline = _deliverable_pipeline(tmp_path)
+    result = pipeline.run("0 = 0")
+    assert result["success"] is True
+    artifact_path = tmp_path / "output.lean"
+    compiled = _sp.run(
+        pipeline._compile_lean_cmd(str(artifact_path)),
+        capture_output=True, text=True,
+        timeout=pipeline.lean_compile_timeout,
+        env=pipeline._compile_env(),
+    )
+    assert compiled.returncode == 0, (
+        f"the artefact does not compile standalone:\n"
+        f"{compiled.stdout[-500:]}\n{compiled.stderr[-500:]}")
+    assert "sorry" not in (compiled.stdout + compiled.stderr)
+
+
+def test_the_cli_writes_the_audit_trail_and_the_artifact(tmp_path) -> None:
+    """The command line must produce the same deliverables as the library."""
+    import json
+
+    repo_root = Path(__file__).resolve().parent
+    # Pin the toolchain the way the repository does, so the CLI does not
+    # fall back to whatever elan's default happens to be.
+    toolchain = repo_root / "lean-toolchain"
+    if toolchain.is_file():
+        (tmp_path / "lean-toolchain").write_text(toolchain.read_text())
+
+    env = os.environ.copy()
+    env["PATH"] = str(Path.home() / ".elan" / "bin") + ":" + env.get("PATH", "")
+    env["PYTHONPATH"] = str(repo_root)
+
+    result = subprocess.run(
+        [sys.executable, str(repo_root / "agentic_pipeline.py"), "0 = 0"],
+        capture_output=True, text=True, timeout=300, cwd=str(tmp_path), env=env,
+    )
+    assert result.returncode == 0, (
+        f"the CLI failed:\n{result.stdout}\n{result.stderr}")
+    trace_path = tmp_path / "traces.json"
+    artifact_path = tmp_path / "output.lean"
+    assert trace_path.exists(), "the CLI wrote no audit trail"
+    assert artifact_path.exists(), "the CLI wrote no verified artefact"
+    trace = json.loads(trace_path.read_text())
+    assert trace["success"] is True
+    assert artifact_path.read_text() == trace["lean_code"]
+    assert "sorry" not in artifact_path.read_text()
+
+
+# ---------------------------------------------------------------------------
+# qed-05-integration-validation: the statement that REACHES Lean.
+#
+# The pipeline's input language is not Lean: implicit multiplication
+# (``2ab``) and the LaTeX-like macros (``\frac``, ``\le``, ``a^{2}``) are
+# part of it, and Lean has none of them.  The user's text used to be
+# interpolated into the theorem as it was written, so the pipeline accepted
+# the input and then handed Lean a statement it could not even PARSE -- a
+# failure with nothing to do with the mathematics.
+#
+# The tests below pin the rendering: the term Lean receives is the term the
+# user wrote, in Lean's vocabulary.
+# ---------------------------------------------------------------------------
+
+
+def test_the_lean_rendering_makes_implicit_products_explicit() -> None:
+    """``2ab`` is a product in the input language and a product in Lean --
+    but Lean needs the ``*``."""
+    from agentic_pipeline import to_lean_expression
+    assert to_lean_expression("2ab = 2 * a * b") == "2 * a * b = 2 * a * b"
+    assert to_lean_expression("ab = a * b") == "a * b = a * b"
+    assert to_lean_expression("2a = 2 * a") == "2 * a = 2 * a"
+
+
+def test_the_lean_rendering_expands_the_latex_macros() -> None:
+    """The macros are part of the input language; Lean knows none of them."""
+    from agentic_pipeline import to_lean_expression
+    assert to_lean_expression(r"\frac{a}{b} = c") == "((a) / (b)) = c"
+    assert to_lean_expression(r"a \cdot b = c") == "a * b = c"
+    assert to_lean_expression(r"a \le b") == "a <= b"
+    assert to_lean_expression(r"a^{2} = b") == "a^(2) = b"
+    assert to_lean_expression(r"x_{1} = 4") == "x_1 = 4"
+
+
+def test_the_lean_rendering_keeps_a_qualified_application_an_application() -> None:
+    """``Nat.succ 0`` is an APPLICATION in Lean, not a product.
+
+    The parser reads the MVP language, where juxtaposition is a product;
+    Lean's qualified names are functions, so the rendering must not turn
+    the application into ``Nat.succ * 0`` -- a term Lean rejects.  An
+    EXPLICIT product stays a product: the two spellings are different
+    statements and must not collapse into one.
+    """
+    from agentic_pipeline import to_lean_expression
+    assert to_lean_expression("Nat.succ 0 = 1") == "Nat.succ 0 = 1"
+    assert to_lean_expression("Nat.succ * 0 = 1") == "Nat.succ * 0 = 1"
+
+
+def test_the_lean_rendering_spells_not_equal_the_way_lean_does() -> None:
+    """Lean has no ``!=`` operator; it spells "not equal" ``≠``."""
+    from agentic_pipeline import to_lean_expression
+    assert to_lean_expression("x != y") == "x ≠ y"
+
+
+def test_the_lean_rendering_leaves_a_plain_statement_alone() -> None:
+    """A statement that is already Lean must reach Lean unchanged."""
+    from agentic_pipeline import to_lean_expression
+    for expression in (
+        "0 = 0",
+        "x + 0 = x",
+        "-1 + 1 = 0",
+        "3 * (5 - 4 / 2) = 3 * 5 - 3 * 4 / 2",
+        "-6 + 9 + -13 + 4 + 6 + 0 = 0",
+        "Q * (C_p - C_tissue / Kp) = Q * C_p - Q * C_tissue / Kp",
+        "dA_liver/dt = Q * (C_p - C_liver / Kp)",
+    ):
+        assert to_lean_expression(expression) == expression, expression
+
+
+def test_the_generated_theorem_is_the_statement_the_user_wrote() -> None:
+    """The theorem must carry the RENDERED statement, not the raw text."""
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline(use_mathlib=True)
+    code = pipeline.generate_lean_code(
+        "(a+b)^2 = a^2 + 2ab + b^2", ["a", "b"])
+    # The implicit product is explicit ...
+    assert "2 * a * b" in code
+    # ... and no LaTeX macro survives into the theorem.
+    assert "\\" not in code
+    assert "sorry" not in code
+
+
+def test_a_latex_statement_reaches_lean_as_lean() -> None:
+    """A statement written in the LaTeX-like input language must reach the
+    compiler as a term Lean can read -- and must then be proved, not merely
+    accepted.
+
+    The proof needs Mathlib (``ring`` over a commutative ring), so the
+    PROOF is asserted only where Mathlib is present; the RENDERING is
+    asserted everywhere, because it is the pipeline's own job.
+    """
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline(use_mathlib=True)
+    result = pipeline.run("(a+b)^2 = a^2 + 2ab + b^2")
+    assert "2 * a * b" in (result.get('lean_code') or '')
+    assert "\\" not in (result.get('lean_code') or '')
+    assert "sorry" not in (result.get('lean_code') or '')
+    if pipeline.use_mathlib:
+        assert result["success"] is True, result.get('error')
+        assert result["tactic"] in ("ring", "ring_nf", "simp", "norm_num")
+    else:
+        # Without Mathlib the proof is out of reach, but the pipeline must
+        # still FAIL CLOSED rather than report a sorry.
+        assert result["success"] is False
