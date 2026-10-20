@@ -4105,3 +4105,41 @@ def test_a_latex_statement_reaches_lean_as_lean() -> None:
         # Without Mathlib the proof is out of reach, but the pipeline must
         # still FAIL CLOSED rather than report a sorry.
         assert result["success"] is False
+
+
+# ---------------------------------------------------------------------------
+# qed-fin14-export: QED's CORE stays DOMAIN-AGNOSTIC.
+#
+# The isomorphism exporter lives in the sibling repository, so the export
+# path is driven from there; what QED owns is its own core.  ``parser.py``
+# and ``agentic_pipeline.py`` must not carry application-specific
+# vocabulary: a domain word in the core is how a domain-agnostic prover
+# quietly becomes a domain-specific one.
+#
+# The rule is pinned here -- not only in the export gate -- so a later edit
+# to the core cannot re-introduce it silently.  The examples in the core's
+# docstrings use neutral placeholder names (``k_rate``, ``dA_1``,
+# ``V * C / (K + C)``) for exactly this reason.
+# ---------------------------------------------------------------------------
+
+
+def test_the_core_is_domain_agnostic() -> None:
+    """No PBPK/organ/cyp vocabulary may appear in QED's core.
+
+    The pattern is the mission's own, and it is deliberately a SUBSTRING
+    match: ``deliverable`` contains ``liver``, so a word that merely looks
+    innocent still counts.
+    """
+    import re
+
+    repo_root = Path(__file__).resolve().parent
+    pattern = re.compile(r"pbpk|liver|dili|cyp|ka_rate", re.IGNORECASE)
+    hits = []
+    for name in ("parser.py", "agentic_pipeline.py"):
+        source = (repo_root / name).read_text(encoding="utf-8")
+        for lineno, line in enumerate(source.splitlines(), 1):
+            if pattern.search(line):
+                hits.append(f"{name}:{lineno}: {line.strip()}")
+    assert not hits, (
+        "QED's core is no longer domain-agnostic:\n" + "\n".join(hits[:10]))
+

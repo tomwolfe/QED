@@ -435,7 +435,7 @@ class LeanAgenticPipeline:
     the final Lean file to compile without `sorry` placeholders.
     """
     
-    # The deliverables a run produces: the audit trail and the verified
+    # The outputs a run produces: the audit trail and the verified
     # Lean artefact.  Both are written by ``run()`` -- the PUBLIC entry
     # point -- so the CLI and a programmatic caller get the same files.
     TRACE_FILE = "traces.json"
@@ -1717,7 +1717,7 @@ class LeanAgenticPipeline:
                     path: Optional[str] = None) -> bool:
         """Write the audit trail for *result* to the trace file.
 
-        The trace is a REQUIRED deliverable (the README promises it on both
+        The trace is a REQUIRED output (the README promises it on both
         success and failure), so it is written by ``run()`` -- the public
         entry point -- rather than only by the CLI.  A programmatic caller
         that forgets to write it would otherwise leave the check "was
@@ -1771,7 +1771,7 @@ class LeanAgenticPipeline:
         Run the full pipeline on mathematical input.
 
         The audit trail and the verified artefact are written here, not only
-        in the CLI: they are the pipeline's deliverables, so a programmatic
+        in the CLI: they are the pipeline's outputs, so a programmatic
         caller gets the same files a command-line caller does.
 
         Args:

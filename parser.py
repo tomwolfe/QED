@@ -1,4 +1,13 @@
-"""Small formula parser for MVP arithmetic expressions."""
+"""Small formula parser for MVP arithmetic expressions.
+
+The parser is DOMAIN-AGNOSTIC: it knows about arithmetic, not about any
+application domain.  The examples in the docstrings below therefore use
+neutral placeholder names (``k_rate``, ``dA_1``, ``V * C / (K + C)``) and
+never application-specific vocabulary -- an organ, an enzyme or a model's
+parameter names.  A domain word leaks into this module by accident, and the
+leak is caught by the repository's leakage gate
+(``scripts/check_fin14_exports.py leakage``).
+"""
 import re
 from typing import List, Optional, Tuple, Dict, Any, cast
 _ODE_RE = re.compile('^\\s*d\\s*([A-Za-z_]\\w*)\\s*/\\s*dt\\s*=\\s*(.*)$', re.DOTALL)
@@ -316,7 +325,7 @@ def normalize_implicit_multiplication_expression(expr: str) -> str:
 
     Known ambiguity of the MVP input language: a *standalone* lowercase
     letter pair is always read as a product ('ab' -> 'a * b'), so a bare
-    two-letter name such as 'ka' in '(ka + Ag)2' is still read as 'k * a'.
+    two-letter name such as 'ks' in '(ks + Bs)2' is still read as 'k * s'.
     Write 'k_rate' style names with an underscore, or an explicit ' * '.
 
     The full contract, from the raw text to the AST the prover sees:
@@ -333,7 +342,7 @@ def normalize_implicit_multiplication_expression(expr: str) -> str:
     '(a+b)(c+d)'         '(a+b) * (c+d)'          (a + b) * (c + d)
     '2(a+b)'             '2 * (a+b)'              2 * (a + b)
     'a(b+c)'             'a * (b+c)'              a * (b + c)
-    'ka_rate'            'ka_rate'                ka_rate
+    'k_rate'             'k_rate'                 k_rate
     'A_1ab'              'A_1ab'                  A_1ab
     'Nat.succ 0'         'Nat.succ 0'             Nat.succ * 0
     '\\frac{a}{b}'       '((a) / (b))'            a / b
@@ -797,9 +806,9 @@ _TIME_VARIABLE_RE = re.compile(r'^dt$|^d[A-Za-z_]')
 def _is_derivative_head(node: Optional[ASTNode]) -> bool:
     """True for the differentiated quantity of a rate-of-change term.
 
-    ``dA_liver`` is a NAME (it carries an upper-case letter), but a
+    ``dA_1`` is a NAME (it carries an upper-case letter), but a
     standalone lowercase pair is read as a PRODUCT by the MVP input
-    language, so ``dgut`` reaches the AST as ``d * gut``.
+    language, so ``dxy`` reaches the AST as ``d * xy``.
     """
     if isinstance(node, Var):
         return node.name == 'd' or bool(_DERIVATIVE_HEAD_RE.match(node.name))
@@ -832,7 +841,7 @@ def _is_derivative_division(node: BinOp) -> bool:
 def is_derivative(node: Optional[ASTNode]) -> bool:
     """Return True if the tree contains a rate-of-change term.
 
-    ``dA_liver/dt`` parses as the division ``dA_liver / dt``, so the
+    ``dA_1/dt`` parses as the division ``dA_1 / dt``, so the
     derivative is a DIVISION whose numerator is the differentiated quantity
     and whose denominator is the time variable.
 
@@ -903,7 +912,7 @@ def has_rational_structure(node: Optional[ASTNode]) -> bool:
     selection uses (``_is_numeric_only``), so the tactic policy and the
     inferred type cannot disagree about whether a statement needs a field.
 
-    Also detects rational patterns of the form ``Vmax * C / (Km + C)`` where
+    Also detects rational patterns of the form ``V * C / (K + C)`` where
     the denominator is a sum containing a symbolic variable, which
     requires ``Real`` typing and ``field_simp``/``ring`` tactics.
 
@@ -931,18 +940,18 @@ def extract_positivity_hypotheses(node: Optional[ASTNode]) -> List[str]:
     """Recursively find all variables in division denominators.
 
     Returns a list of Lean hypothesis strings of the form
-    ``[(hKm : 0 < Km), (hC : 0 < C), ...]`` for every variable that
+    ``[(hK : 0 < K), (hC : 0 < C), ...]`` for every variable that
     appears in the denominator of a ``/`` node (including nested sums
-    like ``Km + C`` in Michaelis-Menten denominators).
+    like ``K + C`` in summed denominators).
 
     These positivity hypotheses are required by Mathlib's ``field_simp``
     to simplify divisions safely over ``ℝ``.
 
     Examples
     --------
-    >>> node, _ = parse_equation("Vmax * C / (Km + C)")
+    >>> node, _ = parse_equation("V * C = Q / (K + C)")
     >>> extract_positivity_hypotheses(node)
-    ['(hC : 0 < C)', '(hKm : 0 < Km)']
+    ['(hC : 0 < C)', '(hK : 0 < K)']
     """
     if node is None:
         return []

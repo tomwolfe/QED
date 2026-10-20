@@ -18,8 +18,10 @@ that failure looks like a broken deliverable rather than a broken gate.
 Each check is a separate subcommand so a mission gate can name the specific
 property it is asserting:
 
-  export    both sizes export, and each file carries its own Fin N
-  compile   both compile with zero errors and mention no sorry
+  export    both sizes export, and each file carries its own Fin N and its
+            own N states' worth of matrix arms
+  compile   both compile with zero errors against the PINNED toolchain and
+            mention no sorry
   axioms    #print axioms for each headline theorem is exactly the three
             standard axioms, for BOTH sizes
   network   _network_for_fin maps 6 and 14 and rejects every other size
@@ -33,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import inspect
 import pathlib
 import re
 import subprocess
@@ -50,8 +53,14 @@ HEADLINE = (
     "veritrial_mass_dissipation",
 )
 
-#: The only axioms a theorem like these may depend on.
+#: The only axioms a theorem like these may depend on -- and, because the
+#: mission asks for them EXACTLY, the set it must depend on.
 ALLOWED_AXIOMS = {"propext", "Classical.choice", "Quot.sound"}
+
+#: A matrix arm in the emitted Lean: ``if i.val = I ∧ j.val = J then``.
+#: The state indices of these arms are what makes the file a model of an
+#: N-state system, so they are what the export check reads.
+_MATRIX_ARM_RE = re.compile(r"if i\.val = (\d+) ∧ j\.val = (\d+) then")
 
 
 def _export(n: int) -> pathlib.Path:
@@ -71,6 +80,35 @@ def _export(n: int) -> pathlib.Path:
     return out
 
 
+def _ensure_export(n: int) -> pathlib.Path:
+    """The exported Lean file for Fin n, exporting it if it is not there."""
+    out = OUT_DIR / f"qed_iso_fin{n}.lean"
+    if not out.exists():
+        _export(n)
+    return out
+
+
+def _matrix_arms(text: str) -> list[tuple[int, int]]:
+    """The (row, column) state indices of every arm of the emitted matrix.
+
+    An N-state model has arms over 0..N-1.  Reading the indices out of the
+    emitted arms is how the check distinguishes "fourteen states' worth of
+    matrix arms" from "six arms, renamed": a renamed file still says
+    ``Fin 14``, but its arms still cover six states.
+    """
+    return [(int(i), int(j)) for i, j in _MATRIX_ARM_RE.findall(text)]
+
+
+def _pinned_lean_version() -> str:
+    """The Lean version the repository pins (``lean-toolchain``).
+
+    ``leanprover/lean4:v4.33.0`` -> ``4.33.0``.
+    """
+    raw = (REPO / "lean-toolchain").read_text(encoding="utf-8").strip()
+    tag = raw.rsplit(":", 1)[-1]
+    return tag[1:] if tag.startswith("v") else tag
+
+
 def _load_export_module():
     """Import VeriTrial's export script as a module (it is not a package)."""
     for p in (str(VERITRIAL / "src"), str(VERITRIAL)):
@@ -84,49 +122,73 @@ def _load_export_module():
 
 def check_export() -> None:
     sizes = (6, 14)
-    texts = []
+    texts = {}
     for n in sizes:
         path = _export(n)
-        text = path.read_text(encoding="utf-8")
-        texts.append(text)
-        assert f"Fin {n}" in text, (
+        texts[n] = path.read_text(encoding="utf-8")
+        assert f"Fin {n}" in texts[n], (
             f"the Fin {n} export does not mention Fin {n}; the size was not "
             f"applied to the emitted file")
-    for n, text in zip(sizes, texts):
+    for n, text in texts.items():
         other = 14 if n == 6 else 6
         assert f"Fin {other}" not in text, (
             f"the Fin {n} export also mentions Fin {other}; the two sizes are "
             f"not distinguished")
     # The wider network must really be wider, not the same file renamed.
-    assert len(texts[1]) > len(texts[0]), (
-        f"the Fin 14 export ({len(texts[1])} bytes) is not larger than the "
-        f"Fin 6 export ({len(texts[0])} bytes); it may not carry 14 states")
-    print(f"both exports OK: Fin 6 = {len(texts[0])} bytes, "
-          f"Fin 14 = {len(texts[1])} bytes")
+    assert len(texts[14]) > len(texts[6]), (
+        f"the Fin 14 export ({len(texts[14])} bytes) is not larger than the "
+        f"Fin 6 export ({len(texts[6])} bytes); it may not carry 14 states")
+    # ... and it must carry fourteen STATES, not fourteen LABELS: the arms
+    # of the emitted matrix must cover exactly the states 0..N-1.
+    for n, text in texts.items():
+        arms = _matrix_arms(text)
+        assert arms, f"the Fin {n} export has no matrix arms"
+        covered = {i for i, _ in arms} | {j for _, j in arms}
+        assert covered == set(range(n)), (
+            f"the Fin {n} export's matrix arms cover states "
+            f"{sorted(covered)}, not exactly 0..{n - 1}")
+        assert len(arms) >= n, (
+            f"the Fin {n} export has only {len(arms)} matrix arms for "
+            f"{n} states")
+    assert len(_matrix_arms(texts[14])) > len(_matrix_arms(texts[6])), (
+        f"the Fin 14 export has {len(_matrix_arms(texts[14]))} matrix arms, "
+        f"not more than the Fin 6 export's {len(_matrix_arms(texts[6]))}")
+    print(f"both exports OK: Fin 6 = {len(texts[6])} bytes / "
+          f"{len(_matrix_arms(texts[6]))} arms, "
+          f"Fin 14 = {len(texts[14])} bytes / "
+          f"{len(_matrix_arms(texts[14]))} arms")
 
 
 def check_compile() -> None:
+    expected = _pinned_lean_version()
+    version = subprocess.run(
+        ["lake", "env", "lean", "--version"],
+        cwd=str(REPO), capture_output=True, text=True)
+    assert version.returncode == 0, (
+        f"could not run the pinned Lean:\n{version.stdout}\n"
+        f"{version.stderr}")
+    assert f"version {expected}" in version.stdout, (
+        f"the compiler is not the pinned toolchain: expected Lean "
+        f"{expected}, got {version.stdout.strip()!r}")
     for n in (6, 14):
-        path = OUT_DIR / f"qed_iso_fin{n}.lean"
-        if not path.exists():
-            _export(n)
+        path = _ensure_export(n)
         proc = subprocess.run(["lake", "env", "lean", str(path)],
                               cwd=str(REPO), capture_output=True, text=True)
         out = proc.stdout + proc.stderr
         assert proc.returncode == 0, (
             f"the Fin {n} export did not compile (exit {proc.returncode}):\n"
             f"{out[-2000:]}")
+        assert not re.search(r"^error", out, re.MULTILINE), (
+            f"the Fin {n} export reports an error:\n{out[-1000:]}")
         assert "sorry" not in out.lower(), (
             f"the Fin {n} export mentions sorry:\n{out[-1000:]}")
-        print(f"Fin {n} compiles clean")
+        print(f"Fin {n} compiles clean on Lean {expected}")
 
 
 def check_axioms() -> None:
     total = 0
     for n in (6, 14):
-        path = OUT_DIR / f"qed_iso_fin{n}.lean"
-        if not path.exists():
-            _export(n)
+        path = _ensure_export(n)
         text = path.read_text(encoding="utf-8")
         present = [nm for nm in HEADLINE
                    if re.search(r"theorem\s+" + nm + r"\b", text)]
@@ -147,9 +209,14 @@ def check_axioms() -> None:
             f"Fin {n}: expected {len(present)} axiom lines, got {found}")
         for entry in found:
             ax = {a.strip() for a in entry.split(",") if a.strip()}
-            assert ax and ax <= ALLOWED_AXIOMS, (
-                f"Fin {n}: a theorem depends on unexpected axioms: {entry}")
+            # EXACTLY the three standard axioms: a subset would still let a
+            # theorem that leans on, say, `sorryAx` through.
+            assert ax == ALLOWED_AXIOMS, (
+                f"Fin {n}: the axiom set is {sorted(ax)}, not exactly "
+                f"{sorted(ALLOWED_AXIOMS)}")
             total += 1
+        assert "sorryAx" not in out, (
+            f"the Fin {n} axiom probe reports sorryAx:\n{out[-1000:]}")
         print(f"Fin {n} axioms clean ({len(found)} theorems)")
     print(f"{total} theorem axiom sets are exactly {sorted(ALLOWED_AXIOMS)}")
 
@@ -182,11 +249,39 @@ def check_default() -> None:
         if p not in sys.path:
             sys.path.insert(0, p)
     from insilico_trial.pbpk.model import (DEFAULT_ORGAN_NETWORK,
-                                            STANDARD_14_ORGAN_NETWORK)
+                                            STANDARD_14_ORGAN_NETWORK,
+                                            make_pbpk_ode, organ_indices)
     assert DEFAULT_ORGAN_NETWORK == (
         "gut", "liver", "central", "peripheral", "effect", "elim"), (
         f"DEFAULT_ORGAN_NETWORK changed: {DEFAULT_ORGAN_NETWORK}")
+    assert len(DEFAULT_ORGAN_NETWORK) == 6
     assert len(STANDARD_14_ORGAN_NETWORK) == 14
+    # The validated six-state model must keep working exactly as it does
+    # today: the model's own entry points still default to the six-organ
+    # network, and Fin 14 is not silently promoted underneath them.
+    for fn in (make_pbpk_ode, organ_indices):
+        default = inspect.signature(fn).parameters["organ_network"].default
+        assert default == DEFAULT_ORGAN_NETWORK, (
+            f"{fn.__name__} now defaults to {default!r}, not "
+            f"DEFAULT_ORGAN_NETWORK")
+    # The exporter's own default (no --fin-n) must still be the Fin 6 file:
+    # promoting Fin 14 to the default would show up here first.
+    default_out = OUT_DIR / "qed_iso_default.lean"
+    proc = subprocess.run(
+        [sys.executable, str(EXPORT_SCRIPT),
+         "--lean-out", str(default_out),
+         "--out", str(OUT_DIR / "default_lemmas.txt")],
+        capture_output=True, text=True, cwd=str(VERITRIAL))
+    assert proc.returncode == 0, (
+        f"the default export failed (exit {proc.returncode}):\n"
+        f"{proc.stdout[-1500:]}\n{proc.stderr[-1500:]}")
+    default_text = default_out.read_text(encoding="utf-8")
+    fin6_text = _ensure_export(6).read_text(encoding="utf-8")
+    assert default_text == fin6_text, (
+        "the exporter's default (no --fin-n) output is no longer the Fin 6 "
+        "file: the default moved")
+    assert "Fin 6" in default_text and "Fin 14" not in default_text, (
+        "the exporter's default output is not a Fin 6 file")
     print("DEFAULT_ORGAN_NETWORK unchanged; Fin 14 is not promoted")
 
 
