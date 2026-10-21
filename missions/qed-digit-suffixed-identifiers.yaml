@@ -1,0 +1,175 @@
+# Mission: qed-digit-suffixed-identifiers
+#
+# WHY THIS EXISTS (a real parser defect, found by the formal gate failing)
+#
+# QED's parser collapses a digit-suffixed identifier onto its stem:
+#
+#     parse_equation("(-ka_rate) + (ka_rate) + (-Ql/(Kpl*Vl)) = 0")
+#       -> free vars ['Kpl', 'Ql', 'Vl', 'ka_rate']      (correct)
+#     parse_equation("(-ka) + (ka) + (-Ql/(Kpl*Vl)) = 0")
+#       -> free vars ['Kpl', 'Ql', 'Vl', 'a', 'k']       (ka split into k * a)
+#     parse_equation("(Q3/Vc) + (Q4/Vc) = 0")
+#       -> free vars ['Q', 'Vc']                        (Q3 AND Q4 BOTH -> Q)
+#
+# So `Q3` and `Q4` are the SAME variable to the parser, and the digit is
+# dropped. Any theorem that quantifies over indexed states -- which is every
+# 14-organ theorem, naming Q3..Q12, V3..V12, Kp3..Kp12 -- is therefore
+# parsed as a theorem about `Q` and `V`.
+#
+# WHY IT MATTERS HERE. VeriTrial's formal gate has a "theorem fidelity"
+# check (scripts/verify_formal_gate.py) that refuses any exported theorem
+# QED reads as being about variables the statement never names. It fires on
+# exactly this:
+#
+#   "is parsed by QED as involving ['Q', 'V'], which the statement never
+#    names; the proved theorem would not be the stated one"
+#
+# The check is currently GREEN only by luck: the six-organ Jacobian identity
+# is exported with a bare `ka`, which the parser splits into `k` and `a`, and
+# that split happens to make the parsed-name set agree with the statement's
+# names. The moment the export stops using the bare `ka`, the Fin 14 gate
+# fails on the `Q3`/`V3` collapse. The gate's Fin 14 path is therefore
+# certified for PROVABILITY (25 lemmas, no sorry) but not for FIDELITY, and
+# the fidelity gap is masked rather than absent.
+#
+# Recorded in VeriTrial/docs/gap_closure_plan.md as G8 (OPEN).
+#
+# SCOPE OF THE CLAIM: fix the tokenizer/parser so an identifier that contains
+# a digit is one identifier, with the digit KEPT. Do not change how a bare
+# `ka` is handled unless the fix requires it -- `ka` splitting into `k * a` is
+# a separate, pre-existing behaviour that VeriTrial works around by naming
+# the parameter `ka_rate`, and this mission must not silently change that
+# contract. If the fix DOES require changing it, say so explicitly.
+
+mission:
+  name: qed-digit-suffixed-identifiers
+  goal: |
+    Make QED's parser treat a digit-suffixed identifier as ONE identifier, with
+    the digits kept, so that `Q3` and `Q4` are different variables.
+
+    TASK 1 - FIND THE TOKENIZER RULE
+    Locate the rule that decides where an identifier ends. The parser
+    currently ends an identifier before a digit, which is what makes `Q3` a
+    bare `Q` followed by the number 3. Read the tokenizer in parser.py and
+    state the rule in your own words before changing anything.
+    Consider: is this the tokenizer, the normaliser, or the AST builder? A
+    number and an identifier-with-digits must not be confused.
+
+    TASK 2 - FIX IT, MINIMALLY
+    Change the smallest thing that makes `Q3`, `Q12`, `Kp3`, `V12` single
+    identifiers. Requirements:
+      - the digits are KEPT in the identifier: `Q3` must not become `Q`;
+      - `Q3` and `Q4` must be DIFFERENT variables;
+      - a genuine number is still a number: `3`, `129`, `0.01` must not
+        become identifiers;
+      - the existing behaviour for a bare `ka` (splitting into `k * a`) must
+        NOT change, unless you find that it is the same rule and cannot be
+        separated. If it cannot be separated, say so plainly in your summary
+        and in the test names -- do not let that change land silently;
+      - no existing test may need to be weakened or deleted. If a test
+        currently asserts the buggy behaviour, that test is the bug: change
+        it to assert the CORRECT behaviour and say so.
+
+    TASK 3 - PIN IT, WITH THE FAILING CASE
+    Add tests that:
+      - `Q3` and `Q4` parse as two DIFFERENT free variables;
+      - a multi-digit suffix survives: `Q12` is one identifier and is not
+        `Q` plus `12`;
+      - a genuine numeric literal is still numeric (`129 = 129` still
+        classifies as a closed numeric equality, not as a statement about
+        two variables);
+      - the whole 14-organ-style statement parses to the variables it
+        actually names -- use this one, it is the exact shape that fails:
+        "(-ka_rate) + (ka_rate) + (-Ql/(Kpl*Vl)) + (Ql/(Kpl*Vl)) + (Ql/Vc)
+         + (-(CL + Ql + Q3 + Q4 + Q5 + Q6 + Q7 + Q8 + Q9 + Q10 + Q11 + Q12)/Vc)
+         + (Q3/Vc) + (Q4/Vc) + (Q5/Vc) + (Q6/Vc) + (Q7/Vc) + (Q8/Vc) + (Q9/Vc)
+         + (Q10/Vc) + (Q11/Vc) + (Q12/Vc) + (CL/Vc) + (Q3/(Kp3*V3))
+         + (-Q3/(Kp3*V3)) + (Q4/(Kp4*V4)) + (-Q4/(Kp4*V4))
+         + (Q5/(Kp5*V5)) + (-Q5/(Kp5*V5)) + (Q6/(Kp6*V6))
+         + (-Q6/(Kp6*V6)) + (Q7/(Kp7*V7)) + (-Q7/(Kp7*V7))
+         + (Q8/(Kp8*V8)) + (-Q8/(Kp8*V8)) + (Q9/(Kp9*V9))
+         + (-Q9/(Kp9*V9)) + (Q10/(Kp10*V10)) + (-Q10/(Kp10*V10))
+         + (Q11/(Kp11*V11)) + (-Q11/(Kp11*V11)) + (Q12/(Kp12*V12))
+         + (-Q12/(Kp12*V12)) = 0"
+        and the parsed variables must include Q3, Q4, ..., Q12, V3, ..., V12
+        and must NOT contain a bare Q or a bare V.
+
+    TASK 4 - PROVE THE 14-ORGAN THEOREM STILL PROVES
+    The parser change must not cost provability. Check that the pipeline can
+    still prove a parametric Real-typed goal with indexed states, for example
+    "Q3 / V3 > 0" with positivity hypotheses, and that the no-sorry policy
+    still holds. A parser that names more variables correctly may need a
+    different theorem shape; if it does, say so -- do not work around it by
+    weakening the no-sorry criterion.
+
+    TASK 5 - QED STAYS DOMAIN-AGNOSTIC
+    The 14-organ statement above is a STRUCTURAL test input, not domain
+    knowledge. `grep -riE "pbpk|liver|dili|cyp|ka_rate"` over parser.py and
+    agentic_pipeline.py must stay empty. If a test needs a domain-flavoured
+    name, use a neutral one (e.g. `X3`, `Y4`).
+
+context_files:
+  - parser.py
+  - agentic_pipeline.py
+  - test_pipeline.py
+  - check_parser.py
+
+constraints:
+  - "QED stays domain-agnostic: no PBPK/organ/cyp vocabulary in parser.py or agentic_pipeline.py"
+  - "do not weaken or delete an existing test without saying so explicitly"
+  - "do not change the no-sorry criterion"
+  - "do not modify lean-toolchain, lakefile.lean, or lake-manifest.json"
+
+verification:
+  commands:
+    # The specific defect is pinned, and it would have failed before the fix.
+    - >-
+      python3 -c "from parser import parse_equation;
+      node, fv = parse_equation('(Q3/Vc) + (Q4/Vc) = 0');
+      assert 'Q3' in fv and 'Q4' in fv, 'digit-suffixed identifiers are not kept: '+str(fv);
+      assert 'Q' not in fv, 'the digit-suffixed identifier collapsed onto its stem: '+str(fv);
+      node, fv2 = parse_equation('(Q12/Vc) = 0');
+      assert 'Q12' in fv2, 'multi-digit suffix is not kept: '+str(fv2);
+      print('digit-suffixed identifiers are distinct and keep their digits')"
+    # A genuine number is still a number.
+    - >-
+      python3 -c "from parser import parse_equation;
+      node, fv = parse_equation('129 = 129');
+      assert not fv, 'a closed numeric equality must not be read as a statement about variables: '+str(fv);
+      print('numeric literals still parse as numbers')"
+    # The 14-organ statement names what it names.
+    - >-
+      python3 -c "from parser import parse_equation;
+      s='(-ka_rate) + (ka_rate) + (-Ql/(Kpl*Vl)) + (Ql/(Kpl*Vl)) + (Ql/Vc) + (-(CL + Ql + Q3 + Q4 + Q5 + Q6 + Q7 + Q8 + Q9 + Q10 + Q11 + Q12)/Vc) + (Q3/Vc) + (Q4/Vc) + (Q5/Vc) + (Q6/Vc) + (Q7/Vc) + (Q8/Vc) + (Q9/Vc) + (Q10/Vc) + (Q11/Vc) + (Q12/Vc) + (CL/Vc) + (Q3/(Kp3*V3)) + (-Q3/(Kp3*V3)) + (Q4/(Kp4*V4)) + (-Q4/(Kp4*V4)) + (Q5/(Kp5*V5)) + (-Q5/(Kp5*V5)) + (Q6/(Kp6*V6)) + (-Q6/(Kp6*V6)) + (Q7/(Kp7*V7)) + (-Q7/(Kp7*V7)) + (Q8/(Kp8*V8)) + (-Q8/(Kp8*V8)) + (Q9/(Kp9*V9)) + (-Q9/(Kp9*V9)) + (Q10/(Kp10*V10)) + (-Q10/(Kp10*V10)) + (Q11/(Kp11*V11)) + (-Q11/(Kp11*V11)) + (Q12/(Kp12*V12)) + (-Q12/(Kp12*V12)) = 0';
+      node, fv = parse_equation(s);
+      missing=[v for v in ['Q3','Q4','Q5','Q6','Q7','Q8','Q9','Q10','Q11','Q12'] if v not in fv];
+      assert not missing, 'the indexed states are not all named: '+str(missing)+' in '+str(fv);
+      assert 'Q' not in fv and 'V' not in fv, 'a bare Q or V appears: '+str(fv);
+      print('the 14-organ identity names all ten indexed states')"
+    # QED's own suites, the no-sorry gate, and domain-agnosticism.
+    - "python3 -m pytest test_pipeline.py -q"
+    - "python3 run_tests.py"
+    - "python3 check_sorry.py true"
+    - >-
+      python3 -c "import re,pathlib;
+      pat=re.compile(r'pbpk|liver|dili|cyp|ka_rate', re.I);
+      hits=[(f,i,l) for f in ('parser.py','agentic_pipeline.py')
+            for i,l in enumerate(pathlib.Path(f).read_text().splitlines(),1)
+            if pat.search(l)];
+      assert not hits, 'domain leakage: '+str(hits[:5]);
+      print('zero domain leakage')"
+  timeout_seconds: 2400
+
+recovery:
+  max_attempts: 3
+
+review:
+  enabled: true
+  adapter: opencode
+
+budget:
+  max_sends: 20
+  max_wall_seconds: 5400
+
+adapter: opencode
+git_state_guard: true
