@@ -4225,3 +4225,260 @@ def test_the_core_is_domain_agnostic() -> None:
     assert not hits, (
         "QED's core is no longer domain-agnostic:\n" + "\n".join(hits[:10]))
 
+
+
+# ---------------------------------------------------------------------------
+# qed-artifact-does-not-dirty-the-tree: a test run must leave the working
+# tree exactly as it found it.
+#
+# ``LeanAgenticPipeline.run()`` writes ``output.lean`` on every successful
+# proof, and that file is TRACKED: it is the committed record of the last
+# proof.  A test that runs the pipeline therefore rewrites a tracked file,
+# so the suite used to leave the tree dirty:
+#
+#     $ python3 -m pytest test_pipeline.py -q
+#     351 passed
+#     $ git status --porcelain
+#      M output.lean
+#
+# and a dirty tree is what makes Tether refuse to start the next mission
+# ("Working tree is dirty; refusing to start the agent"), blocking every
+# mission that declares QED as a sibling.
+#
+# The fix is the autouse fixture in ``conftest.py``: the artefact's BYTES
+# are snapshotted before each test and restored after it.
+#
+# THE GATE BELOW is a nested pytest session.  That is not a convenience: the
+# fixture that restores the artefact tears down AFTER the test body, so a
+# test inside the same session could never observe the restored state.  A
+# nested session runs a session of its own, in its own process, and the
+# outer test then inspects the tree from the outside -- which is the only
+# place the property "a test run leaves the file byte-identical" is
+# observable at all.
+#
+# The nested session runs the pipeline for real (one successful proof) and
+# keeps a copy of the bytes the run produced, so the gate also proves it is
+# not VACUOUS: a run that happened to reproduce the committed bytes would
+# pass a naive comparison without ever restoring anything.
+# ---------------------------------------------------------------------------
+
+# The nested session's test: prove one statement and keep what the run left
+# behind, so the outer test can tell a real restoration from a vacuous one.
+_ARTIFACT_GATE_INNER_TEST = '''\
+import shutil
+from pathlib import Path
+
+ARTIFACT = Path("output.lean")
+WITNESS = Path(__file__).resolve().parent / "artifact_after_run.bin"
+
+
+def test_the_pipeline_writes_the_tracked_artifact():
+    """Prove one statement, and keep a copy of what the run left behind."""
+    from agentic_pipeline import LeanAgenticPipeline
+
+    result = LeanAgenticPipeline().run("0 = 0")
+    assert result["success"] is True, result.get("error")
+    # The pipeline really did write the artefact: the guard must not silence
+    # the pipeline, it must only undo the residue AFTER the test.
+    assert ARTIFACT.exists(), "the pipeline wrote no artefact"
+    shutil.copyfile(ARTIFACT, WITNESS)
+'''
+
+# The nested session's test for the teardown-on-failure requirement: it
+# dirties the artefact and then FAILS on purpose.
+_ARTIFACT_GATE_INNER_FAILING_TEST = '''\
+from pathlib import Path
+
+ARTIFACT = Path("output.lean")
+
+
+def test_this_test_fails_on_purpose():
+    """Dirty the artefact, then fail: the restore must happen anyway."""
+    ARTIFACT.write_text(
+        "theorem qed_goal : 1 = 1 := by\\n  sorry\\n", encoding="utf-8")
+    assert False, "this test fails on purpose"
+'''
+
+
+def _artifact_bytes(path: Path):
+    """The bytes of *path*, or None when it does not exist."""
+    try:
+        return path.read_bytes()
+    except (FileNotFoundError, IsADirectoryError):
+        return None
+
+
+def _nested_session(tmp_path, repo: Path, body: str):
+    """Run a nested pytest session that exercises *body*.
+
+    The session runs in the repository root, so the pipeline writes the
+    tracked artefact where the repository's own ``conftest.py`` expects it,
+    and the repository's guard is loaded into the nested session explicitly
+    (``-p conftest``): the nested test file lives outside the repository, so
+    pytest's ordinary conftest discovery does not reach the repository's
+    guard.  When there is no ``conftest.py`` the nested session runs
+    unguarded -- which is exactly the negative control this gate needs.
+    """
+    inner = tmp_path / "test_nested_artifact_gate.py"
+    inner.write_text(body, encoding="utf-8")
+
+    env = os.environ.copy()
+    env["PATH"] = str(Path.home() / ".elan" / "bin") + ":" + env.get("PATH", "")
+    env["PYTHONPATH"] = (
+        str(repo) + os.pathsep + env.get("PYTHONPATH", ""))
+    args = [
+        sys.executable, "-m", "pytest", str(inner), "-q",
+        "-p", "no:cacheprovider",
+    ]
+    if (repo / "conftest.py").is_file():
+        args += ["-p", "conftest"]
+    return subprocess.run(
+        args,
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+        timeout=900,
+        env=env,
+    )
+
+
+def test_a_test_run_leaves_the_tracked_artifact_byte_identical(tmp_path) -> None:
+    """A test that runs the pipeline must leave the tracked artefact exactly
+    as it found it.
+
+    THIS is the gate that would have caught the bug: it FAILS against the
+    old behaviour (the artefact is rewritten by the run and never put back)
+    and PASSES once the artefact is restored around every test.
+    """
+    repo = Path(__file__).resolve().parent
+    artifact = repo / "output.lean"
+    before = _artifact_bytes(artifact)
+
+    completed = _nested_session(tmp_path, repo, _ARTIFACT_GATE_INNER_TEST)
+
+    assert completed.returncode == 0, (
+        "the nested session did not pass:\n"
+        f"{completed.stdout}\n{completed.stderr}")
+    assert "1 passed" in completed.stdout, completed.stdout
+
+    witness = tmp_path / "artifact_after_run.bin"
+    assert witness.is_file(), (
+        "the nested session did not keep the artefact it produced")
+    written = witness.read_bytes()
+
+    # The run really did rewrite the tracked artefact.  Without this check
+    # the comparison below could pass because the run happened to reproduce
+    # the committed bytes -- which would make the gate vacuous.
+    assert written != before, (
+        "the nested run did not change the tracked artefact, so this gate "
+        "cannot fail: pick a witness statement whose proof differs from the "
+        "committed artefact")
+
+    after = _artifact_bytes(artifact)
+    assert after == before, (
+        "the tracked artefact was rewritten by the test run and never put "
+        f"back:\n  before: {before!r}\n  after:  {after!r}")
+
+
+def test_the_artifact_is_restored_even_when_the_test_fails(tmp_path) -> None:
+    """The restore is a teardown: it happens when the test FAILS too.
+
+    A restore that only ran on the success path would leave the tree dirty
+    exactly when something is already wrong, which is the worst possible
+    moment to dirty it.
+    """
+    repo = Path(__file__).resolve().parent
+    artifact = repo / "output.lean"
+    before = _artifact_bytes(artifact)
+
+    completed = _nested_session(
+        tmp_path, repo, _ARTIFACT_GATE_INNER_FAILING_TEST)
+
+    # The nested test fails on purpose; the restore must have happened
+    # anyway.
+    assert completed.returncode != 0, (
+        "the nested session was supposed to fail on purpose:\n"
+        f"{completed.stdout}\n{completed.stderr}")
+    after = _artifact_bytes(artifact)
+    assert after == before, (
+        "the tracked artefact was not restored after a FAILING test:\n"
+        f"  before: {before!r}\n  after:  {after!r}")
+
+
+def test_the_guard_restores_the_content_and_not_only_the_modification_time(
+    tmp_path,
+) -> None:
+    """A same-length edit is still a change.
+
+    The sandbox's filesystem-manifest diff fingerprints small files by
+    sha256, so restoring only the modification time would still register as
+    a change.  The two writes below have the SAME LENGTH and differ only in
+    their bytes.
+    """
+    from artifact_guard import preserved_artifact
+
+    target = tmp_path / "output.lean"
+    target.write_bytes(b"ORIGINAL\n")
+    with preserved_artifact(tmp_path):
+        target.write_bytes(b"DIRTIED!\n")
+        assert target.read_bytes() == b"DIRTIED!\n"
+    assert target.read_bytes() == b"ORIGINAL\n"
+
+
+def test_the_guard_restores_the_artifact_after_a_failure(tmp_path) -> None:
+    """The restore runs in a ``finally``, so a raised error cannot skip it."""
+    import pytest as _pytest
+
+    from artifact_guard import preserved_artifact
+
+    target = tmp_path / "output.lean"
+    target.write_bytes(b"ORIGINAL\n")
+    with _pytest.raises(RuntimeError):
+        with preserved_artifact(tmp_path):
+            target.write_bytes(b"DIRTIED!\n")
+            raise RuntimeError("the guarded block failed")
+    assert target.read_bytes() == b"ORIGINAL\n"
+
+
+def test_the_guard_does_not_create_a_file_that_did_not_exist(tmp_path) -> None:
+    """A file that was not there before must not be there after."""
+    from artifact_guard import preserved_artifact
+
+    target = tmp_path / "output.lean"
+    assert not target.exists()
+    with preserved_artifact(tmp_path):
+        target.write_bytes(b"CREATED\n")
+        assert target.exists()
+    assert not target.exists(), (
+        "the guard left behind a file that did not exist before the test")
+
+
+def test_the_guard_does_not_leave_a_file_that_existed_missing(tmp_path) -> None:
+    """A file that WAS there must be there afterwards -- restored, not gone."""
+    from artifact_guard import preserved_artifact
+
+    target = tmp_path / "output.lean"
+    target.write_bytes(b"ORIGINAL\n")
+    with preserved_artifact(tmp_path):
+        target.unlink()
+        assert not target.exists()
+    assert target.read_bytes() == b"ORIGINAL\n"
+
+
+def test_the_pipeline_still_writes_the_artifact_during_a_test(tmp_path) -> None:
+    """The guard must not SILENCE the pipeline.
+
+    ``run()`` still writes the artefact -- that is its job, and
+    ``check_integration.py`` asserts the file exists after a run.  The guard
+    only undoes the residue after the test.
+    """
+    from agentic_pipeline import LeanAgenticPipeline
+
+    pipeline = LeanAgenticPipeline(
+        artifact_path=str(tmp_path / "output.lean"),
+        trace_path=str(tmp_path / "traces.json"),
+    )
+    result = pipeline.run("0 = 0")
+    assert result["success"] is True, result.get("error")
+    assert (tmp_path / "output.lean").exists(), (
+        "the pipeline wrote no artefact: the guard has silenced it")

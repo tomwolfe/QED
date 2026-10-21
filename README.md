@@ -263,6 +263,12 @@ python3 run_tests.py  # End-to-end tests (18 tests, requires Lean 4)
 python3 check_integration.py  # Integration check with real Lean compiler
 ```
 
+A test run leaves the repository exactly as it found it. `output.lean` is a
+tracked file, and every successful proof rewrites it, so the artefact's
+bytes are snapshotted before each test and restored after it (see
+`conftest.py` and `artifact_guard.py`). The pipeline is not silenced: a run
+still writes the artefact, and `check_integration.py` still finds it.
+
 ## Tether Integration
 
 This project uses Tether for orchestration and verification. Missions are defined in the `missions/` directory:

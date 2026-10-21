@@ -24,6 +24,7 @@ import sys
 os.environ["PATH"] = os.path.expanduser("~/.elan/bin") + ":" + os.environ.get("PATH", "")
 
 from agentic_pipeline import LeanAgenticPipeline
+from artifact_guard import preserved_artifact
 
 TRACE = "traces.json"
 ARTIFACT = "output.lean"
@@ -131,7 +132,22 @@ def check_case(pipeline, expression, expect_success=True):
 
 
 def main():
+    """Run every integration check.
+
+    The tracked artefact is restored on the way out.  These checks run the
+    pipeline in the repository root, so without the restore this script
+    would leave the working tree dirty exactly like a test run does -- and a
+    dirty tree is what makes Tether refuse to start the next mission.
+
+    The checks themselves are unchanged: the pipeline still writes the
+    artefact, and the artefact is still asserted on below.
+    """
     print("Running integration checks with real Lean compiler...")
+    with preserved_artifact():
+        _run_checks()
+
+
+def _run_checks():
     pipeline = LeanAgenticPipeline()
 
     # These should fail validation

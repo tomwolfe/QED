@@ -10,6 +10,8 @@ import json
 import os
 from pathlib import Path
 
+from artifact_guard import preserved_artifact
+
 
 def _check_lean_available():
     """Check if the Lean compiler is available."""
@@ -333,6 +335,18 @@ def run_no_sorry_gate_tests():
 
 
 def run_all_tests():
+    """Run every test case.
+
+    The tracked artefact is restored on the way out.  The pipeline tests run
+    the CLI in the repository root, so without the restore this suite would
+    leave the working tree dirty -- exactly what a pytest run does, and
+    exactly what makes Tether refuse to start the next mission.
+    """
+    with preserved_artifact():
+        return _run_all_tests()
+
+
+def _run_all_tests():
     """Run all test cases"""
     lean_available = _check_lean_available()
 

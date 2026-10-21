@@ -20,6 +20,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from artifact_guard import preserved_artifact
+
 QED_DIR = Path(__file__).resolve().parent
 
 
@@ -33,6 +35,21 @@ def _is_mathlib_dependent(lemma: str) -> bool:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Verify the lemmas and leave the tracked artefact as it was found.
+
+    Each lemma is proved by running QED's CLI in THIS repository, and the
+    CLI writes the TRACKED artefact ``output.lean`` on every successful
+    proof.  Left alone, this script would dirty the QED repository for
+    whoever runs it next -- and a dirty repository is what makes Tether
+    refuse to start the next mission ("Working tree is dirty; refusing to
+    start the agent").  So the artefact is restored on the way out; the
+    proofs themselves are unaffected.
+    """
+    with preserved_artifact():
+        return _verify_lemmas(argv)
+
+
+def _verify_lemmas(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("lemmas", type=Path,
                     help="file of lemmas, one per line")
