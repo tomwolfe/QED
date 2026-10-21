@@ -1,0 +1,120 @@
+# Mission: qed-artifact-does-not-dirty-the-tree
+#
+# WHY THIS EXISTS (a tracked generated artifact was blocking the WHOLE system)
+#
+# QED's `output.lean` is written by `LeanAgenticPipeline.run()` on every
+# successful proof (`write_artifact`, agentic_pipeline.py). It is a RUNTIME
+# ARTEFACT -- its content is whichever proof ran last -- and it is TRACKED in
+# git. So:
+#
+#   $ python3 -m pytest test_pipeline.py -q
+#   351 passed
+#   $ git status --porcelain
+#    M output.lean
+#
+# The tree is now dirty. And Tether's dirty check spans WORKSPACE REPOS:
+# `workspace_create_checkpoint` checks the primary project AND every repo in
+# the mission's `workspace_repos`, so a dirty QED blocks EVERY mission that
+# declares QED as a sibling -- which is all of the VeriTrial-scoped missions
+# and the tri-repo gate itself. Observed: three consecutive missions aborted
+# with "Working tree is dirty; refusing to start the agent" while
+# `is_dirty()` returned False for the project they were pointed at.
+#
+# `traces.json` has the same shape and is already gitignored, so the fix for
+# `output.lean` is to follow the precedent that already exists in this repo.
+#
+# SCOPE OF THE CLAIM: the test suite must leave the working tree exactly as
+# it found it, and the tracked artefact must keep its committed content. The
+# pipeline still writes the artefact -- that is its job, and
+# `check_integration.py` asserts the file exists after a run. What changes is
+# that a TEST does not leave the repository dirty.
+
+mission:
+  name: qed-artifact-does-not-dirty-the-tree
+  goal: |
+    Make the QED test suite leave the working tree exactly as it found it, so
+    a test run cannot block the next Tether mission.
+
+    TASK 1 - FIND EVERY PATH THAT WRITES INTO THE REPO
+    `LeanAgenticPipeline.run()` writes `output.lean` (ARTIFACT_FILE) on every
+    successful proof. Confirm that is the only tracked file the pipeline
+    writes, and that the other artefact it produces (`traces.json`) is
+    already gitignored. List them; do not assume.
+
+    TASK 2 - RESTORE THE ARTEFACT AROUND TESTS
+    Add a `conftest.py` (if the repo has none) with an autouse fixture that
+    captures the tracked artefact's bytes before each test and restores them
+    after it, so a test run leaves the file byte-identical to how it found
+    it. Requirements:
+      - the restore must happen even if the test FAILS or raises, so use
+        try/finally or a yield fixture with teardown;
+      - it must restore CONTENT, not just the modification time: the sandbox's
+        filesystem-manifest diff fingerprints small files by sha256, so a
+        same-length edit with a new mtime still counts as a change;
+      - it must not restore a file that did not exist before the test, and it
+        must not create one that did;
+      - it must leave the pipeline's own behaviour alone: `run()` still writes
+        the artefact, and `check_integration.py` still finds it.
+    The equivalent of the gitignore precedent already in this repo is
+    preferred over anything cleverer: `traces.json` is handled by
+    .gitignore, so handle `output.lean` the same way IF, AND ONLY IF, that
+    keeps the tracked file's committed content stable. Choose ONE approach
+    and say which, and why.
+
+    TASK 3 - PROVE IT, WITH A GATE THAT WOULD HAVE CAUGHT THE BUG
+    Add a test that runs the pipeline (one successful proof is enough) and
+    then asserts the tracked artefact on disk is byte-identical to what it
+    was before the test started. That test is the point of the mission: it
+    must FAIL against the current behaviour and PASS after the fix. A test
+    that only asserts the artefact EXISTS does not cover this and is not
+    acceptable.
+
+    TASK 4 - THE TREE MUST BE CLEAN AFTER A FULL RUN
+    After the full suite has run, `git status --porcelain` must be EMPTY.
+    That is the operational property the whole tri-repo system depends on, and
+    it is what the mission's own verification command asserts.
+
+context_files:
+  - agentic_pipeline.py
+  - check_integration.py
+  - test_pipeline.py
+
+constraints:
+  - "do not change what the pipeline proves, and do not weaken any test"
+  - "do not change the tracked artefact's committed content"
+  - "the pipeline must still write the artefact: check_integration.py asserts it exists"
+
+verification:
+  commands:
+    # The suite passes AND leaves the tree clean. This is the gate that would
+    # have caught the original problem.
+    - >-
+      python3 -c "import subprocess,sys,pathlib;
+      before=pathlib.Path('output.lean').read_bytes() if pathlib.Path('output.lean').exists() else None;
+      r=subprocess.run([sys.executable,'-m','pytest','test_pipeline.py','-q'],capture_output=True,text=True);
+      assert r.returncode==0, 'the suite is not green: '+(r.stdout+r.stderr)[-1200:];
+      after=pathlib.Path('output.lean').read_bytes() if pathlib.Path('output.lean').exists() else None;
+      assert before==after, 'the tracked artefact changed during the suite: it is written on every successful proof';
+      s=subprocess.run(['git','status','--porcelain'],capture_output=True,text=True);
+      assert s.stdout.strip()=='', 'the suite left the working tree dirty: '+s.stdout[:600];
+      print('the suite is green and leaves the working tree clean')"
+    # The pipeline still writes the artefact (its job is not to be silenced).
+    - "python3 check_integration.py"
+    # The no-sorry gate and the full unit suite still hold.
+    - "python3 run_tests.py"
+    - "python3 -m pytest test_pipeline.py -q"
+  timeout_seconds: 2400
+
+recovery:
+  max_attempts: 3
+
+review:
+  enabled: true
+  adapter: opencode
+
+budget:
+  max_sends: 16
+  max_wall_seconds: 5400
+
+adapter: opencode
+git_state_guard: true
