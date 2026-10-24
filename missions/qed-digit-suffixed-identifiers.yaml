@@ -113,52 +113,64 @@ context_files:
   - agentic_pipeline.py
   - test_pipeline.py
   - check_parser.py
+  - scripts/check_digit_suffix_identifiers.py
 
 constraints:
   - "QED stays domain-agnostic: no PBPK/organ/cyp vocabulary in parser.py or agentic_pipeline.py"
   - "do not weaken or delete an existing test without saying so explicitly"
   - "do not change the no-sorry criterion"
   - "do not modify lean-toolchain, lakefile.lean, or lake-manifest.json"
+  - "DO NOT create any git commits. Leave every change in the working tree, uncommitted. This mission runs with git_state_guard: true, which compares the repo HEAD against a checkpoint taken at session start; a commit made during the session is reported as 'history was rewritten' and the mission fails with verification skipped -- even when the work is correct and the tests pass. The guard is strict on purpose, so the fix is to not commit."
 
 verification:
+  # NO clean room, and no sibling copy.  A clean room is a pristine
+  # `git archive` of HEAD plus the session patch, and it does NOT carry the
+  # gitignored `.lake` build tree: inside it QED reports use_mathlib=False,
+  # so every Mathlib-dependent lemma fails and the Fin 14 gate's --strict
+  # mode fails closed.  `lake env lean` there also tries to REBUILD Mathlib
+  # from source, which does not finish inside the budget.  The sibling copy
+  # does not help either: the copied tree has no Mathlib and the VeriTrial
+  # gate resolves QED as <parent>/QED, a path the clean-room layout does
+  # not have.  The gates below therefore run against the working tree, where
+  # the pinned toolchain and its build cache are.
+  #
+  # `clean_room: false` is the SETTING, not just the intent: without it the
+  # resolved value falls back to the project config, and a clean room is what
+  # put the Fin 14 gate's QED tree out of reach in the first place (the gate
+  # resolves QED as <parent>/QED, and in a clean room the QED tree is
+  # <root>/attempt-NN while VeriTrial is copied to <root>/VeriTrial).
+  clean_room: false
   commands:
-    # The specific defect is pinned, and it would have failed before the fix.
-    - >-
-      python3 -c "from parser import parse_equation;
-      node, fv = parse_equation('(Q3/Vc) + (Q4/Vc) = 0');
-      assert 'Q3' in fv and 'Q4' in fv, 'digit-suffixed identifiers are not kept: '+str(fv);
-      assert 'Q' not in fv, 'the digit-suffixed identifier collapsed onto its stem: '+str(fv);
-      node, fv2 = parse_equation('(Q12/Vc) = 0');
-      assert 'Q12' in fv2, 'multi-digit suffix is not kept: '+str(fv2);
-      print('digit-suffixed identifiers are distinct and keep their digits')"
-    # A genuine number is still a number.
-    - >-
-      python3 -c "from parser import parse_equation;
-      node, fv = parse_equation('129 = 129');
-      assert not fv, 'a closed numeric equality must not be read as a statement about variables: '+str(fv);
-      print('numeric literals still parse as numbers')"
-    # The 14-organ statement names what it names.
-    - >-
-      python3 -c "from parser import parse_equation;
-      s='(-ka_rate) + (ka_rate) + (-Ql/(Kpl*Vl)) + (Ql/(Kpl*Vl)) + (Ql/Vc) + (-(CL + Ql + Q3 + Q4 + Q5 + Q6 + Q7 + Q8 + Q9 + Q10 + Q11 + Q12)/Vc) + (Q3/Vc) + (Q4/Vc) + (Q5/Vc) + (Q6/Vc) + (Q7/Vc) + (Q8/Vc) + (Q9/Vc) + (Q10/Vc) + (Q11/Vc) + (Q12/Vc) + (CL/Vc) + (Q3/(Kp3*V3)) + (-Q3/(Kp3*V3)) + (Q4/(Kp4*V4)) + (-Q4/(Kp4*V4)) + (Q5/(Kp5*V5)) + (-Q5/(Kp5*V5)) + (Q6/(Kp6*V6)) + (-Q6/(Kp6*V6)) + (Q7/(Kp7*V7)) + (-Q7/(Kp7*V7)) + (Q8/(Kp8*V8)) + (-Q8/(Kp8*V8)) + (Q9/(Kp9*V9)) + (-Q9/(Kp9*V9)) + (Q10/(Kp10*V10)) + (-Q10/(Kp10*V10)) + (Q11/(Kp11*V11)) + (-Q11/(Kp11*V11)) + (Q12/(Kp12*V12)) + (-Q12/(Kp12*V12)) = 0';
-      node, fv = parse_equation(s);
-      missing=[v for v in ['Q3','Q4','Q5','Q6','Q7','Q8','Q9','Q10','Q11','Q12'] if v not in fv];
-      assert not missing, 'the indexed states are not all named: '+str(missing)+' in '+str(fv);
-      assert 'Q' not in fv and 'V' not in fv, 'a bare Q or V appears: '+str(fv);
-      print('the 14-organ identity names all ten indexed states')"
-    # QED's own suites, the no-sorry gate, and domain-agnosticism.
+    # The gates live in a SCRIPT, not in one-line `python3 -c` payloads:
+    # Tether runs verification commands with shlex.split and shell=False, so
+    # a YAML-folded multi-line Python payload becomes a SyntaxError (a
+    # compound statement cannot follow a semicolon).  A broken GATE looks
+    # exactly like a broken deliverable.
+    - "python3 scripts/check_digit_suffix_identifiers.py suffix"
+    - "python3 scripts/check_digit_suffix_identifiers.py numeric"
+    - "python3 scripts/check_digit_suffix_identifiers.py names"
+    - "python3 scripts/check_digit_suffix_identifiers.py ka"
+    - "python3 scripts/check_digit_suffix_identifiers.py leakage"
+    # QED's own suites and the no-sorry gate.
     - "python3 -m pytest test_pipeline.py -q"
     - "python3 run_tests.py"
     - "python3 check_sorry.py true"
+    # PROVABILITY (TASK 4): a parametric Real-typed goal over INDEXED
+    # states must still prove, with the positivity hypotheses and with no
+    # sorry.  This is the command that would catch a parser change that
+    # names more variables correctly but needs a different theorem shape.
     - >-
-      python3 -c "import re,pathlib;
-      pat=re.compile(r'pbpk|liver|dili|cyp|ka_rate', re.I);
-      hits=[(f,i,l) for f in ('parser.py','agentic_pipeline.py')
-            for i,l in enumerate(pathlib.Path(f).read_text().splitlines(),1)
-            if pat.search(l)];
-      assert not hits, 'domain leakage: '+str(hits[:5]);
-      print('zero domain leakage')"
-  timeout_seconds: 2400
+      python3 scripts/check_digit_suffix_identifiers.py prove
+    # THE FIDELITY PROOF (the reason this mission exists).  The Fin 14 export
+    # is the lemma set that names the ten indexed states; the gate must still
+    # prove every lemma with no sorry AFTER the parser fix, and the parsed
+    # names must be exactly the names the statements use -- every indexed
+    # state, and no bare stem.  Both were checked against the pre-fix
+    # parser and BOTH failed there, so neither is vacuous.
+    - "python3 ../VeriTrial/scripts/export_pbpk_to_qed.py --out /tmp/fin14_lemmas.txt --fin-n 14 --parametric --saturable"
+    - "python3 ../VeriTrial/scripts/verify_formal_gate.py /tmp/fin14_lemmas.txt --fin-n 14 --strict --saturable"
+    - "python3 scripts/check_digit_suffix_identifiers.py fidelity --lemmas /tmp/fin14_lemmas.txt"
+  timeout_seconds: 5400
 
 recovery:
   max_attempts: 3
@@ -172,4 +184,11 @@ budget:
   max_wall_seconds: 5400
 
 adapter: opencode
+adapters:
+  opencode:
+    # The pin, spelled out rather than inherited: the model must be the
+    # same one everywhere the mission is read, and the preset's default
+    # must not be able to drift underneath it.
+    command: ["opencode", "run", "--auto", "-m", "opencode/beam-free", "{prompt}"]
+    timeout_seconds: 5400
 git_state_guard: true

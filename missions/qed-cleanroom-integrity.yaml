@@ -36,4 +36,4 @@ budget:
 adapter: opencode
 adapters:
   opencode:
-    command: ["opencode", "run", "-m", "opencode/minimax-m3.1-flash-free", "{prompt}"]
+    command: ["opencode", "run", "-m", "opencode/beam-free", "{prompt}"]

@@ -312,7 +312,6 @@ def normalize_implicit_multiplication_expression(expr: str) -> str:
     Handles cases like:
     - '2a' -> '2 * a' (number followed by variable)
     - 'ab' -> 'a * b' (two single-letter variables)
-    - 'a2' -> 'a * 2' (standalone variable followed by number)
     - '2ab' -> '2 * a * b' (number followed by chain of variables)
     - '3xyz' -> '3 * x * y * z' (number followed by multi-letter chain)
     - '(a+b)2' -> '(a+b) * 2' (paren followed by number)
@@ -322,6 +321,25 @@ def normalize_implicit_multiplication_expression(expr: str) -> str:
 
     Multi-character names are preserved: the rules only fire at word
     boundaries, so 'k_rate', 'A_1ab', 'a_bc' and 'Nat.succ' are left intact.
+
+    A DIGIT SUFFIX IS PART OF THE NAME (G8).  An identifier is
+    ``[A-Za-z_][A-Za-z0-9_]*``: the digits that follow the first character
+    belong to the name, they are not a separate numeric token.  So 'Q3',
+    'Q12', 'Kp3' and 'V3' are ONE identifier each, and -- the point of the
+    fix -- 'Q3' and 'Q4' are DIFFERENT variables.  The previous rule split a
+    single letter followed by a digit ('Q3' -> 'Q * 3'), which silently
+    collapsed every indexed state onto its stem: the fourteen-organ
+    theorems, which quantify over Q3..Q12, V3..V12 and Kp3..Kp12, were
+    read by the prover as theorems about 'Q' and 'V'.  A theorem that names
+    a variable the statement never mentions is not the theorem that was
+    written, so the digit now stays in the name.
+
+    The price, stated rather than hidden: 'a2' is now the identifier 'a2'
+    and NOT the product 'a * 2'.  A single letter followed by a digit is
+    indistinguishable from a digit-suffixed name, so it is read as a name.
+    The product spelling is still available and is still what the number
+    rules produce: '2 * a' (and '2a', which is a NUMBER followed by a
+    name).  Only the letter-then-digit direction changed.
 
     Known ambiguity of the MVP input language: a *standalone* lowercase
     letter pair is always read as a product ('ab' -> 'a * b'), so a bare
@@ -337,7 +355,9 @@ def normalize_implicit_multiplication_expression(expr: str) -> str:
     '2ab'                '2 * a * b'              (2 * a) * b
     '3xyz'               '3 * x * y * z'          ((3 * x) * y) * z
     'ab'                 'a * b'                  a * b
-    'a2'                 'a * 2'                  a * 2
+    'a2'                 'a2'                     a2
+    'Q3'                 'Q3'                     Q3
+    'Q12'                'Q12'                    Q12
     '(a+b)2'             '(a+b) * 2'              (a + b) * 2
     '(a+b)(c+d)'         '(a+b) * (c+d)'          (a + b) * (c + d)
     '2(a+b)'             '2 * (a+b)'              2 * (a + b)
@@ -394,13 +414,14 @@ def normalize_implicit_multiplication_expression(expr: str) -> str:
         if new_result != result:
             changed = True
         result = new_result
-    changed = True
-    while changed:
-        changed = False
-        new_result = re.sub('(?<![' + _WORD + '])([a-zA-Z])(\\d)(?!\\w)', '\\1 * \\2', result)
-        if new_result != result:
-            changed = True
-        result = new_result
+    # NO letter-then-digit rule (G8).  A digit suffix belongs to the NAME:
+    # 'Q3' is one identifier, not the product 'Q * 3'.  The rule that used
+    # to live here split a single letter followed by a digit and so
+    # collapsed every indexed state onto its stem ('Q3' and 'Q4' became the
+    # same variable 'Q', the digits were dropped).  A theorem that mentions
+    # variables its statement never names is not the stated theorem, so the
+    # digits are kept.  The number-then-name direction above is unchanged:
+    # '2a' is still '2 * a'.
     changed = True
     while changed:
         changed = False
@@ -416,6 +437,15 @@ def normalize_implicit_multiplication_expression(expr: str) -> str:
 # identifier must *start* with a letter (``k_rate``, ``A_1``, ``Nat.succ``).
 # Allowing a leading ``_`` let the digit-grouping form ``1_000`` tokenize as
 # ``1`` + ``_000`` and reach Lean as the different statement ``1 * _000``.
+#
+# An IDENTIFIER is ``[A-Za-z][A-Za-z0-9_]*`` (optionally dotted) -- a letter
+# followed by word characters, DIGITS INCLUDED.  The digits after the first
+# character are part of the name and are never split off as a number:
+# ``Q3``, ``Q12``, ``Kp3`` and ``V3`` are one token each, so ``Q3`` and
+# ``Q4`` are two DIFFERENT variables.  The normaliser used to split a single
+# letter followed by a digit ('Q3' -> 'Q * 3'), which collapsed every
+# indexed state onto its stem and made the prover certify a theorem about
+# variables the statement never named.
 #
 # The multi-character operators must be listed *before* the single-character
 # operator class: the regex is an ordered alternation, so ``<=`` after

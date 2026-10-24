@@ -2632,7 +2632,13 @@ def test_implicit_multiplication_patterns() -> None:
         ('2ab', '2 * a * b', '((2 * a) * b)'),
         ('3xyz', '3 * x * y * z', '(((3 * x) * y) * z)'),
         ('ab', 'a * b', '(a * b)'),
-        ('a2', 'a * 2', '(a * 2)'),
+        # G8: a digit suffix belongs to the NAME.  'a2' used to be read as
+        # the product 'a * 2', which collapsed every indexed state onto its
+        # stem ('Q3' and 'Q4' were both 'Q').  A letter-then-digit token is
+        # now an identifier; the product spelling is still available.
+        ('a2', 'a2', 'a2'),
+        ('Q3', 'Q3', 'Q3'),
+        ('Q12', 'Q12', 'Q12'),
         ('(a+b)2', '(a+b) * 2', '((a + b) * 2)'),
         ('(a+b)(c+d)', '(a+b) * (c+d)', '((a + b) * (c + d))'),
         ('2(a+b)', '2 * (a+b)', '(2 * (a + b))'),
@@ -4482,3 +4488,136 @@ def test_the_pipeline_still_writes_the_artifact_during_a_test(tmp_path) -> None:
     assert result["success"] is True, result.get("error")
     assert (tmp_path / "output.lean").exists(), (
         "the pipeline wrote no artefact: the guard has silenced it")
+
+
+# --- G8: digit-suffixed identifiers are ONE identifier, digits kept -------
+
+
+def test_digit_suffixed_identifiers_are_distinct_variables() -> None:
+    """``Q3`` and ``Q4`` must be two DIFFERENT variables (G8).
+
+    They used to collapse onto their stem: the normaliser split a single
+    letter followed by a digit, so the parser reported ``['Q', 'Vc']`` for
+    ``(Q3/Vc) + (Q4/Vc) = 0`` -- the digits were dropped and every indexed
+    state became the same variable.
+    """
+    node, free_vars = parse_equation('(Q3/Vc) + (Q4/Vc) = 0')
+    assert node is not None
+    assert 'Q3' in free_vars and 'Q4' in free_vars, free_vars
+    assert 'Q' not in free_vars, free_vars
+    assert 'Vc' in free_vars, free_vars
+    # The two are not merely present: they are two names, so a statement
+    # that uses both is a statement about TWO quantities.
+    assert len(free_vars) == 3, free_vars
+
+
+def test_multi_digit_suffix_is_one_identifier() -> None:
+    """``Q12`` is ONE identifier and is NOT ``Q`` plus the number ``12``."""
+    node, free_vars = parse_equation('(Q12/Vc) = 0')
+    assert node is not None
+    assert free_vars == ['Q12', 'Vc'], free_vars
+    # If the suffix had been split off, the numerator would carry a Num
+    # node for the digits instead of a Var node for the whole name.
+    from parser import BinOp, Var
+    assert isinstance(node.left, BinOp), node.left
+    assert isinstance(node.left.left, Var), node.left.left
+    assert node.left.left.name == 'Q12', node.left.left
+
+
+def test_a_numeric_literal_is_still_a_number() -> None:
+    """A genuine number must not become an identifier (G8).
+
+    The digits of a NUMERAL belong to the numeral; the digits of a NAME
+    belong to the name.  Reading ``129`` as the name ``129`` would turn a
+    closed numeric equality into a statement about two variables, and the
+    prover would then be proving something that was never written.
+    """
+    from parser import is_numeric_equality
+    node, free_vars = parse_equation('129 = 129')
+    assert node is not None
+    assert free_vars == [], free_vars
+    assert is_numeric_equality('129 = 129') is True
+    # The numeral is a Num node, not a Var node.
+    from parser import Num
+    assert isinstance(node.left, Num), node.left
+    assert node.left.value == 129, node.left
+    # A decimal is not part of the MVP input language at all: it must not
+    # become an identifier either, and it must fail closed rather than be
+    # silently read as the product ``0 * 01``.
+    from parser import tokenize
+    assert tokenize('0.01') == []
+    eq, free_vars = parse_equation('0.01 = 0.01')
+    assert eq is None
+    assert free_vars == [], free_vars
+
+
+def test_the_indexed_state_identity_names_every_state() -> None:
+    """The 14-organ-shaped statement names what it names.
+
+    Structural input only: the variable names are the ones the statement
+    itself uses.  This is the shape that fails when a digit suffix is
+    dropped -- every ``Q3..Q12`` would collapse onto ``Q``.
+    """
+    statement = (
+        '(-ka_rate) + (ka_rate) + (-Ql/(Kpl*Vl)) + (Ql/(Kpl*Vl)) + (Ql/Vc)'
+        ' + (-(CL + Ql + Q3 + Q4 + Q5 + Q6 + Q7 + Q8 + Q9 + Q10 + Q11 + Q12)/Vc)'
+        ' + (Q3/Vc) + (Q4/Vc) + (Q5/Vc) + (Q6/Vc) + (Q7/Vc) + (Q8/Vc)'
+        ' + (Q9/Vc) + (Q10/Vc) + (Q11/Vc) + (Q12/Vc) + (CL/Vc)'
+        ' + (Q3/(Kp3*V3)) + (-Q3/(Kp3*V3)) + (Q4/(Kp4*V4)) + (-Q4/(Kp4*V4))'
+        ' + (Q5/(Kp5*V5)) + (-Q5/(Kp5*V5)) + (Q6/(Kp6*V6)) + (-Q6/(Kp6*V6))'
+        ' + (Q7/(Kp7*V7)) + (-Q7/(Kp7*V7)) + (Q8/(Kp8*V8)) + (-Q8/(Kp8*V8))'
+        ' + (Q9/(Kp9*V9)) + (-Q9/(Kp9*V9)) + (Q10/(Kp10*V10))'
+        ' + (-Q10/(Kp10*V10)) + (Q11/(Kp11*V11)) + (-Q11/(Kp11*V11))'
+        ' + (Q12/(Kp12*V12)) + (-Q12/(Kp12*V12)) = 0')
+    node, free_vars = parse_equation(statement)
+    assert node is not None
+    for index in range(3, 13):
+        for prefix in ('Q', 'Kp', 'V'):
+            assert f'{prefix}{index}' in free_vars, (prefix, index, free_vars)
+    assert 'Q' not in free_vars and 'V' not in free_vars, free_vars
+    assert 'Kp' not in free_vars, free_vars
+
+
+def test_the_two_letter_rate_is_still_split_into_its_factors() -> None:
+    """The G8 fix must NOT change the pre-existing 'ka' contract.
+
+    ``ka`` is still read as the implicit product ``k * a``; that is a
+    separate rule (a standalone lowercase letter pair) and it is unchanged.
+    """
+    node, free_vars = parse_equation('(-ka) + (ka) = 0')
+    assert node is not None
+    assert free_vars == ['a', 'k'], free_vars
+    node, free_vars = parse_equation('(-ka_rate) + (ka_rate) = 0')
+    assert node is not None
+    assert free_vars == ['ka_rate'], free_vars
+
+
+def test_an_indexed_state_positivity_goal_still_proves() -> None:
+    """The parser change must not cost provability (TASK 4).
+
+    A parametric Real-typed goal over INDEXED states must still prove, with
+    its positivity hypotheses and with no sorry.  The goal is a ratio over
+    two indexed names: the shape the fix is about.
+
+    The theorem shape did NOT have to change -- ``Q3`` and ``hQ3`` are legal
+    Lean identifiers -- so the same shape as before the fix still proves.
+    """
+    from agentic_pipeline import LeanAgenticPipeline
+    pipeline = LeanAgenticPipeline(use_mathlib=True)
+    code = pipeline.generate_lean_code("Q3 / V3 > 0", ["Q3", "V3"])
+    assert "(Q3 : ℝ)" in code, code
+    assert "(V3 : ℝ)" in code, code
+    assert "(hQ3 : 0 < Q3)" in code, code
+    assert "sorry" not in code, code
+    if not pipeline.use_mathlib:
+        # No Mathlib here: the proof is out of reach, but the run must fail
+        # CLOSED and never carry a sorry.
+        result = pipeline.run("Q3 / V3 > 0", max_iterations=3)
+        assert result["success"] is False
+        assert "sorry" not in (result.get("lean_code") or "")
+        return
+    result = pipeline.run("Q3 / V3 > 0")
+    assert result["success"] is True, result.get("error")
+    assert "sorry" not in result["lean_code"]
+    assert "sorryAx" not in result["lean_code"]
+    assert result["verification"]["axioms_check"] == "passed"
