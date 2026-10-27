@@ -2130,6 +2130,27 @@ def test_normalize_does_not_split_inside_alphabetic_name() -> None:
     assert n('2_3') == '2_3'
 
 
+def test_digit_suffixed_identifiers_are_distinct_variables() -> None:
+    """A trailing digit is part of the name, not an implicit product.
+
+    ``Q3`` used to normalize to ``Q * 3`` so ``(Q3/Vc)`` and ``(Q/Vc)`` were
+    the same AST and two different organ flows collided.  Digit suffixes are
+    now preserved (cf. ``Q4``) while digit *prefixes* (``2a``) remain
+    multiplication.
+    """
+    from parser import normalize_implicit_multiplication_expression as n
+    assert n('Q3') == 'Q3'
+    assert n('x1 + y2') == 'x1 + y2'
+    assert n('2a') == '2 * a'
+    eq, free_vars = parse_equation('(Q3/Vc) = 0')
+    assert eq is not None
+    assert free_vars == ['Q3', 'Vc']
+    eq, free_vars = parse_equation('(Q3/Vc) + (Q4/Vc) = 0')
+    assert eq is not None
+    assert free_vars == ['Q3', 'Q4', 'Vc']
+    assert canonical_form(eq) == '(((Q3 / Vc) + (Q4 / Vc))=0)'
+
+
 def test_normalize_keeps_pinned_products_after_boundary_fix() -> None:
     """The boundary lookarounds must not weaken genuine implicit products."""
     from parser import normalize_implicit_multiplication_expression as n
@@ -2632,7 +2653,8 @@ def test_implicit_multiplication_patterns() -> None:
         ('2ab', '2 * a * b', '((2 * a) * b)'),
         ('3xyz', '3 * x * y * z', '(((3 * x) * y) * z)'),
         ('ab', 'a * b', '(a * b)'),
-        ('a2', 'a * 2', '(a * 2)'),
+        ('a2', 'a2', 'a2'),
+        ('Q3', 'Q3', 'Q3'),
         ('(a+b)2', '(a+b) * 2', '((a + b) * 2)'),
         ('(a+b)(c+d)', '(a+b) * (c+d)', '((a + b) * (c + d))'),
         ('2(a+b)', '2 * (a+b)', '(2 * (a + b))'),

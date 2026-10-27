@@ -312,7 +312,7 @@ def normalize_implicit_multiplication_expression(expr: str) -> str:
     Handles cases like:
     - '2a' -> '2 * a' (number followed by variable)
     - 'ab' -> 'a * b' (two single-letter variables)
-    - 'a2' -> 'a * 2' (standalone variable followed by number)
+    - 'a2' -> 'a2' (digit suffix belongs to the identifier)
     - '2ab' -> '2 * a * b' (number followed by chain of variables)
     - '3xyz' -> '3 * x * y * z' (number followed by multi-letter chain)
     - '(a+b)2' -> '(a+b) * 2' (paren followed by number)
@@ -337,7 +337,8 @@ def normalize_implicit_multiplication_expression(expr: str) -> str:
     '2ab'                '2 * a * b'              (2 * a) * b
     '3xyz'               '3 * x * y * z'          ((3 * x) * y) * z
     'ab'                 'a * b'                  a * b
-    'a2'                 'a * 2'                  a * 2
+    'a2'                 'a2'                     a2
+    'Q3'                 'Q3'                     Q3
     '(a+b)2'             '(a+b) * 2'              (a + b) * 2
     '(a+b)(c+d)'         '(a+b) * (c+d)'          (a + b) * (c + d)
     '2(a+b)'             '2 * (a+b)'              2 * (a + b)
@@ -394,13 +395,12 @@ def normalize_implicit_multiplication_expression(expr: str) -> str:
         if new_result != result:
             changed = True
         result = new_result
-    changed = True
-    while changed:
-        changed = False
-        new_result = re.sub('(?<![' + _WORD + '])([a-zA-Z])(\\d)(?!\\w)', '\\1 * \\2', result)
-        if new_result != result:
-            changed = True
-        result = new_result
+    # NOTE: a digit suffix belongs to the identifier (``Q3``, ``x1``,
+    # ``A2``).  There is deliberately no ``letter -> digit`` implicit-product
+    # rule here: stripping the suffix turned ``Q3`` into ``Q * 3`` and made
+    # two distinct variables (``Q3``/``Q4``) collide with ``Q``, which is a
+    # different equation from the one the user wrote.  Digit *prefixes*
+    # (``2a``) are still implicit multiplication via the loop above.
     changed = True
     while changed:
         changed = False
