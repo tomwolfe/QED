@@ -934,12 +934,20 @@ class LeanAgenticPipeline:
             return True, "Lean source contains 'Tactic.sorry'"
         if re.search(r'\bsorryAx\b', lean_source):
             return True, "Lean source contains 'sorryAx'"
+        if re.search(r'\badmit\b', lean_source):
+            return True, "Lean source contains 'admit'"
+        if re.search(r'\baxiom\b', lean_source):
+            return True, "Lean source contains 'axiom'"
         if re.search(r'\bsorry\b', lean_source):
             return True, "Lean source contains 'sorry'"
         
         # Check compiler output for sorry or sorryAx (word boundary match)
         if re.search(r'\bsorryAx\b', compiler_output):
             return True, "Compiler output mentions 'sorryAx'"
+        if re.search(r'\badmit\b', compiler_output):
+            return True, "Compiler output mentions 'admit'"
+        if re.search(r'\baxiom\b', compiler_output):
+            return True, "Compiler output mentions 'axiom'"
         
         # Check for Lean 4 warning patterns indicating sorry usage.
         #
@@ -1071,7 +1079,9 @@ class LeanAgenticPipeline:
                 # Belt and braces: a sorry mention anywhere in the output
                 # (e.g. a warning about a different declaration in the same
                 # file) is a leak, whatever this theorem's axiom list says.
-                if re.search(r'\bsorry\b', output):
+                # Evaluated through the full gate so `sorryAx`, `admit` and
+                # `axiom` leak the same way `sorry` does.
+                if self.check_for_sorry('', output)[0]:
                     return False, "#print axioms shows sorry"
                 return True, ""
 
@@ -1079,7 +1089,7 @@ class LeanAgenticPipeline:
                 r"'%s' does not depend on any axioms" % re.escape(target),
                 output,
             ):
-                if re.search(r'\bsorry\b', output):
+                if self.check_for_sorry('', output)[0]:
                     return False, "#print axioms shows sorry"
                 return True, ""
 
@@ -1105,8 +1115,10 @@ class LeanAgenticPipeline:
         what is on disk. The file is the artefact a reviewer will re-check
         and re-compile, so the gate has to be evaluated on the file itself.
 
-        Fails closed: a file that cannot be read is not a file that has been
-        shown to be sorry-free.
+        Returns ``(is_clean, reason)`` -- ``is_clean`` is True only when the
+        bytes on disk were read AND contain no sorry, matching the convention
+        of :meth:`_verify_no_sorry_axioms`.  Fails closed: a file that cannot
+        be read is not a file that has been shown to be sorry-free.
         """
         try:
             with open(temp_path, 'r') as f:
@@ -1115,7 +1127,8 @@ class LeanAgenticPipeline:
             return False, (
                 f"Post-compilation source re-read failed (fail-closed): {e}"
             )
-        return self.check_for_sorry(disk_source, '')
+        has_sorry, reason = self.check_for_sorry(disk_source, '')
+        return (not has_sorry), reason
 
     @staticmethod
     def _parse_lean_goal(stderr: str) -> Optional[str]:
@@ -1646,8 +1659,8 @@ class LeanAgenticPipeline:
                     # compiler. The file is what a reviewer re-checks, so a
                     # file that carries a sorry must not be reported as
                     # verified even when the compiled source was clean.
-                    disk_sorry, disk_reason = self._source_on_disk_is_clean(temp_path)
-                    if disk_sorry:
+                    disk_clean, disk_reason = self._source_on_disk_is_clean(temp_path)
+                    if not disk_clean:
                         attempt['has_sorry'] = True
                         attempt['sorry_reason'] = f"Post-compilation source re-read: {disk_reason}"
                         continue
@@ -1761,10 +1774,10 @@ class LeanAgenticPipeline:
                                 # sorry-bearing artefact cannot be reported
                                 # as verified just because the in-memory
                                 # source was clean.
-                                disk_sorry, disk_reason = (
+                                disk_clean, disk_reason = (
                                     self._source_on_disk_is_clean(temp_path)
                                 )
-                                if disk_sorry:
+                                if not disk_clean:
                                     attempt['has_sorry'] = True
                                     attempt['sorry_reason'] = (
                                         f"Post-compilation source re-read: {disk_reason}"
@@ -1915,6 +1928,12 @@ class LeanAgenticPipeline:
         current one.  The bytes written are exactly the source that was
         compiled, so the artefact recompiles on its own.
 
+        Defense in depth: even when the caller claims success, a source
+        carrying a sorry placeholder (`sorry`, `sorryAx`, `admit`, `axiom`)
+        is never written.  The gate in `execute_tactic_loop` should already
+        have rejected it; this keeps a future success-path bug from
+        producing a sorry-bearing artefact.
+
         Returns:
             True when the artefact was written, False when it could not be
             (or when the run did not succeed).
@@ -1923,6 +1942,12 @@ class LeanAgenticPipeline:
             return False
         source = result.get('lean_code') or ''
         if not source.strip():
+            return False
+        has_sorry, sorry_reason = self.check_for_sorry(source, '')
+        if has_sorry:
+            result['artifact_error'] = (
+                f"Refused to write artefact with sorry placeholder: {sorry_reason}"
+            )
             return False
         target = Path(path or self.artifact_path)
         try:
@@ -1948,6 +1973,20 @@ class LeanAgenticPipeline:
             Dictionary with results
         """
         result = self.execute_tactic_loop(latex_input, max_iterations)
+        # Final gate: success must never carry a sorry placeholder.  The loop
+        # already enforces this, but a last check here keeps a future
+        # success-path bug from being reported (or written) as verified.
+        if result.get('success'):
+            lean_code = result.get('lean_code') or ''
+            has_sorry, sorry_reason = self.check_for_sorry(lean_code, '')
+            if has_sorry:
+                result['success'] = False
+                result['error'] = (
+                    f"Rejected verified claim with sorry placeholder: {sorry_reason}"
+                )
+                result['lean_code'] = ''
+                result.pop('tactic', None)
+                result.pop('verification', None)
         # The artefact first, the trail last: the trail is the record of
         # the run, so it is written once everything else is settled.
         self.write_artifact(result)
