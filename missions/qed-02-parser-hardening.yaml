@@ -15,6 +15,7 @@ context_files:
 verification:
   commands:
     - python3 -m pytest test_pipeline.py -v
+    - python3 check_qed02_revised.py
   probes:
     - command: python3 check_parser.py pre_paren
       contains: "2 * (a+b)"
@@ -22,10 +23,12 @@ verification:
       contains: "(a+b) * (c+d)"
     - command: python3 check_parser.py chain
       contains: "3 * x * y * z"
+    - command: python3 check_qed02_revised.py
+      contains: "qed-02 revised asserts OK"
   clean_room: true
   mutation:
     enabled: true
-    fail_below: 0.7
+    fail_below: 1.0
     max_mutants: 20
 
 recovery:
@@ -35,7 +38,13 @@ review:
   enabled: false
 
 budget:
-  max_sends: 24
-  max_wall_seconds: 5400
+  max_sends: 12
+  max_wall_seconds: 10800
 adapter: opencode
 git_state_guard: true
+
+allowed_paths:
+  - "**"
+forbidden_paths:
+  - ".git/**"
+  - ".tether/**"
