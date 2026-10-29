@@ -314,12 +314,13 @@ modules do not exist in the pinned source).
 | | Result |
 |---|---|
 | Before | 10 failed, 248 passed |
-| After | 258 passed |
+| After (at the time of the rename) | 258 passed |
+| After (re-verified 2026-10-29, suite grown since) | 359 passed, 0 failed |
 
 The 10 that flipped were the parametric/Real-typed goals, all of which had been
 failing on `incompatible header` rather than on the mathematics. No test was
 skipped, xfailed, relaxed or deleted, and no `sorry` was introduced. `run_tests.py`
-remains 18/18.
+remains green (22/22 on re-verification; 18/18 at the time of the rename).
 
 **4. `generate_lean_code(expression, free_vars=None)`.**
 `free_vars` is now optional and defaults to `None`, normalised to `[]`. Every
