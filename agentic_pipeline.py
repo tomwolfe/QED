@@ -1844,6 +1844,38 @@ class LeanAgenticPipeline:
                 'infrastructure_failure': True,
             }
 
+        # The compiler binary itself could not be launched (e.g. a stale
+        # lean_path pointing at a file that does not exist). Every attempt
+        # then fails with an OSError such as "[Errno 2] No such file or
+        # directory" -- never a verdict. Reporting that as "No tactic
+        # succeeded" would misread a missing compiler as an unprovable
+        # statement, so it fails closed as infrastructure, with the same
+        # error as a lean_path of None.
+        def _is_launch_failure(attempt: Dict[str, Any]) -> bool:
+            if attempt.get('exit_code') != -1:
+                return False
+            stderr = (attempt.get('stderr') or '').lower()
+            return (
+                'no such file' in stderr
+                or 'errno 2' in stderr
+                or 'permission denied' in stderr
+                or 'errno 13' in stderr
+            )
+
+        if attempts and all(_is_launch_failure(a) for a in attempts):
+            detail = (attempts[0].get('stderr') or '').strip()
+            return {
+                'success': False,
+                'error': (
+                    'Lean compiler not found. Install elan and run: '
+                    'elan default leanprover/lean4:stable'
+                    + (f' (the configured lean binary could not be launched: {detail})' if detail else '')
+                ),
+                'lean_code': base_code,
+                'attempts': attempts,
+                'infrastructure_failure': True,
+            }
+
         return {
             'success': False,
             'error': f'No tactic succeeded after {len(attempts)} attempts',
