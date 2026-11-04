@@ -591,6 +591,14 @@ class LeanAgenticPipeline:
     TRACE_FILE = "traces.json"
     ARTIFACT_FILE = "output.lean"
 
+    # Process-wide cache for the Mathlib availability probe. The probe
+    # invokes `lean` on a scratch file importing Mathlib (~6 s warm, up to
+    # 60 s cold); without caching, every `LeanAgenticPipeline()` built by
+    # the 359-test suite pays it again, pushing a cold clean-room run past
+    # its budget. The result depends only on the toolchain + LEAN_PATH,
+    # which are fixed for the process, so caching preserves semantics.
+    _mathlib_probe_cache: dict | None = None
+
     def __init__(self, use_mathlib: bool = True, lean_path: Optional[str] = None,
                  adapter: Optional[Any] = None,
                  lean_compile_timeout: int = 180,
@@ -715,7 +723,11 @@ class LeanAgenticPipeline:
     
     def _check_mathlib_available(self) -> bool:
         """Check if Mathlib is available in the Lean environment."""
+        if type(self)._mathlib_probe_cache is not None:
+            cached = type(self)._mathlib_probe_cache
+            return bool(cached.get("available", 0))
         if not self.lean_path:
+            type(self)._mathlib_probe_cache = {"available": 0}
             return False
         
         env = os.environ.copy()
@@ -741,8 +753,11 @@ class LeanAgenticPipeline:
                     timeout=60,
                     env=env
                 )
-                return result.returncode == 0
+                available = result.returncode == 0
+                type(self)._mathlib_probe_cache = {"available": available}
+                return available
             except Exception:
+                type(self)._mathlib_probe_cache = {"available": 0}
                 return False
             finally:
                 try:
@@ -750,6 +765,7 @@ class LeanAgenticPipeline:
                 except Exception:
                     pass
         except Exception:
+            type(self)._mathlib_probe_cache = {"available": 0}
             return False
     
     def validate_input(self, latex_input: str) -> Tuple[bool, str]:

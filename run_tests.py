@@ -56,7 +56,11 @@ def run_pipeline_test(
             ["python3", "agentic_pipeline.py", latex_input],
             capture_output=True,
             text=True,
-            timeout=60,
+            # Sized for a cold clean-room Mathlib cache (see
+            # LeanAgenticPipeline lean_compile_timeout): a warm run
+            # finishes in seconds, but the first import from source can
+            # exceed 60 s, which SIGTERM'd a green suite (exit -15).
+            timeout=180,
             env=env,
         )
 
