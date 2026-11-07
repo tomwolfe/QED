@@ -28,7 +28,12 @@ theorem born_solvation_pos (eps r : ℝ) (he : 1 < eps) (hr : 0 < r) :
 theorem ea_bounds (x lo hi : ℝ) (hlo : lo ≤ x) (hhi : x ≤ hi) :
     0.659 * lo + ((-2.9176)) ≤ eaCal x ∧ eaCal x ≤ 0.659 * hi + ((-2.9176)) := by
   unfold eaCal
-  constructor <;> (have ha : (0:ℝ) < 0.659 := by norm_num; nlinarith)
+  have ha : (0:ℝ) < 0.659 := by norm_num
+  constructor
+  · have h := mul_le_mul_of_nonneg_left hlo (le_of_lt ha)
+    linarith
+  · have h := mul_le_mul_of_nonneg_left hhi (le_of_lt ha)
+    linarith
 
 theorem reduction_stability_mono (g1 g2 s : ℝ) (h : g1 ≤ g2) :
     eaSol g1 s ≤ eaSol g2 s := by
